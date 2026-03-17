@@ -325,6 +325,8 @@ unit PasRISCV;
 
 {$define NVMELevelTriggeredPCIEInterrupts}
 
+{$define PasRISCVUseFutexEvents} // Use TPasMPFutexEvent instead of TPasMPConditionVariable+Lock
+
 {-$define NVMeSyncProcessing} // NVMe: process commands synchronously in doorbell handler (no job manager dispatch)
 
 {$define VirtIOReadAvailRingFlags} // VirtIO spec 2.7.7.1: read VIRTQ_AVAIL_F_NO_INTERRUPT from available ring instead of used ring
@@ -2866,8 +2868,12 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
             TEventThread=class(TPasMPThread)
              private
               fMachine:TPasRISCV;
+{$ifdef PasRISCVUseFutexEvents}
+              fFutexEvent:TPasMPFutexEvent;
+{$else}
               fConditionVariableLock:TPasMPConditionVariableLock;
               fConditionVariable:TPasMPConditionVariable;
+{$endif}
               fRunning:TPasMPBool32;
              protected
               procedure Execute; override;
@@ -2941,8 +2947,12 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               fSleepingOnIdle:TPasMPBool32;
               fSleepingJobWorkerThreads:TPasMPInt32;
               fWakeUpCounter:TPasMPInt32;
+{$ifdef PasRISCVUseFutexEvents}
+              fWakeUpFutexEvent:TPasMPFutexEvent;
+{$else}
               fWakeUpConditionVariableLock:TPasMPConditionVariableLock;
               fWakeUpConditionVariable:TPasMPConditionVariable;
+{$endif}
              public
               constructor Create(const aCountWorkerThreads:TPasRISCVSizeInt); reintroduce;
               destructor Destroy; override;
@@ -11536,11 +11546,16 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 
       private
 
+{$ifdef PasRISCVUseFutexEvents}
+       fHARTWakeUpFutexEvent:TPasMPFutexEvent;
+       fHARTStatusChangeFutexEvent:TPasMPFutexEvent;
+{$else}
        fHARTWakeUpConditionVariableLock:TPasMPConditionVariableLock;
        fHARTWakeUpConditionVariable:TPasMPConditionVariable;
 
        fHARTStatusChangeConditionVariableLock:TPasMPConditionVariableLock;
        fHARTStatusChangeConditionVariable:TPasMPConditionVariable;
+{$endif}
 
        fOnReboot:TOnReboot;
 
@@ -11560,8 +11575,12 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
        fINITRDOffset:TPasRISCVUInt64;
        fINITRDSize:TPasRISCVUInt64;
 
+{$ifdef PasRISCVUseFutexEvents}
+       fWakeUpFutexEvent:TPasMPFutexEvent;
+{$else}
        fWakeUpConditionVariableLock:TPasMPConditionVariableLock;
        fWakeUpConditionVariable:TPasMPConditionVariable;
+{$endif}
 {$if defined(PasRISCVInterruptWakeupHardening)}
        fWakeGeneration:TPasRISCVUInt64;
 {$ifend}
@@ -25531,8 +25550,12 @@ end;
 constructor TPasRISCV.TEventThread.Create(const aMachine:TPasRISCV);
 begin
  fMachine:=aMachine;
+{$ifdef PasRISCVUseFutexEvents}
+ fFutexEvent:=TPasMPFutexEvent.Create;
+{$else}
  fConditionVariableLock:=TPasMPConditionVariableLock.Create;
  fConditionVariable:=TPasMPConditionVariable.Create;
+{$endif}
  fRunning:=false;
  inherited Create(false);
 end;
@@ -25540,14 +25563,22 @@ end;
 destructor TPasRISCV.TEventThread.Destroy;
 begin
  Shutdown;
+{$ifdef PasRISCVUseFutexEvents}
+ FreeAndNil(fFutexEvent);
+{$else}
  FreeAndNil(fConditionVariableLock);
  FreeAndNil(fConditionVariable);
+{$endif}
  inherited Destroy;
 end;
 
 procedure TPasRISCV.TEventThread.Shutdown;
 begin
  if not Finished then begin
+{$ifdef PasRISCVUseFutexEvents}
+  Terminate;
+  fFutexEvent.Wake;
+{$else}
   fConditionVariableLock.Acquire;
   try
    Terminate;
@@ -25555,6 +25586,7 @@ begin
   finally
    fConditionVariableLock.Release;
   end;
+{$endif}
   WaitFor;
  end;
 end;
@@ -25562,6 +25594,11 @@ end;
 procedure TPasRISCV.TEventThread.Start;
 begin
  if not TPasMPInterlocked.Read(fRunning) then begin
+{$ifdef PasRISCVUseFutexEvents}
+  if not TPasMPInterlocked.CompareExchange(fRunning,TPasMPBool32(true),TPasMPBool32(false)) then begin
+   fFutexEvent.Wake;
+  end;
+{$else}
   fConditionVariableLock.Acquire;
   try
    if not TPasMPInterlocked.CompareExchange(fRunning,TPasMPBool32(true),TPasMPBool32(false)) then begin
@@ -25570,12 +25607,18 @@ begin
   finally
    fConditionVariableLock.Release;
   end;
+{$endif}
  end;
 end;
 
 procedure TPasRISCV.TEventThread.Stop;
 begin
  if TPasMPInterlocked.Read(fRunning) then begin
+{$ifdef PasRISCVUseFutexEvents}
+  if TPasMPInterlocked.CompareExchange(fRunning,TPasMPBool32(false),TPasMPBool32(true)) then begin
+   fFutexEvent.Wake;
+  end;
+{$else}
   fConditionVariableLock.Acquire;
   try
    if TPasMPInterlocked.CompareExchange(fRunning,TPasMPBool32(false),TPasMPBool32(true)) then begin
@@ -25584,6 +25627,7 @@ begin
   finally
    fConditionVariableLock.Release;
   end;
+{$endif}
  end;
 end;
 
@@ -25595,6 +25639,12 @@ begin
 
  while not Terminated do begin
 
+{$ifdef PasRISCVUseFutexEvents}
+  while not (TPasMPInterlocked.Read(fRunning) or Terminated) do begin
+   fFutexEvent.Wait(1000000000);
+   fFutexEvent.Reset;
+  end;
+{$else}
   fConditionVariableLock.Acquire;
   try
    while not (TPasMPInterlocked.Read(fRunning) or Terminated) do begin
@@ -25603,6 +25653,7 @@ begin
   finally
    fConditionVariableLock.Release;
   end;
+{$endif}
 
   if Terminated then begin
    break;
@@ -25610,6 +25661,10 @@ begin
 
   while TPasMPInterlocked.Read(fRunning) and not Terminated do begin
 
+{$ifdef PasRISCVUseFutexEvents}
+   Timeouted:=not fFutexEvent.Wait(10000000);
+   fFutexEvent.Reset;
+{$else}
    fConditionVariableLock.Acquire;
    try
     Timeouted:=fConditionVariable.Wait(fConditionVariableLock,10)=wrTimeout;
@@ -25617,6 +25672,7 @@ begin
    finally
     fConditionVariableLock.Release;
    end;
+{$endif}
 
    if Terminated then begin
     break;
@@ -28647,9 +28703,13 @@ begin
 
  fWakeUpCounter:=0;
 
+{$ifdef PasRISCVUseFutexEvents}
+ fWakeUpFutexEvent:=TPasMPFutexEvent.Create;
+{$else}
  fWakeUpConditionVariableLock:=TPasMPConditionVariableLock.Create;
 
  fWakeUpConditionVariable:=TPasMPConditionVariable.Create;
+{$endif}
 
  for Index:=0 to fCountWorkerThreads-1 do begin
   JobWorkerThread:=TPasRISCV.TJobWorkerThread.Create(self);
@@ -28684,8 +28744,12 @@ begin
   FreeAndNil(fWorkerThreads[Index]);
  end;
 
+{$ifdef PasRISCVUseFutexEvents}
+ FreeAndNil(fWakeUpFutexEvent);
+{$else}
  FreeAndNil(fWakeUpConditionVariable);
  FreeAndNil(fWakeUpConditionVariableLock);
+{$endif}
 
  inherited Destroy;
 
@@ -28711,9 +28775,17 @@ begin
 end;
 
 procedure TPasRISCV.TJobManager.WaitForWakeUp;
+{$ifndef PasRISCVUseFutexEvents}
 var SavedWakeUpCounter:TPasMPInt32;
+{$endif}
 begin
  if fSleepingOnIdle then begin
+{$ifdef PasRISCVUseFutexEvents}
+  TPasMPInterlocked.Increment(fSleepingJobWorkerThreads);
+  fWakeUpFutexEvent.Wait(TPasMPUInt64($ffffffffffffffff));
+  fWakeUpFutexEvent.Reset;
+  TPasMPInterlocked.Decrement(fSleepingJobWorkerThreads);
+{$else}
   fWakeUpConditionVariableLock.Acquire;
   try
    TPasMPInterlocked.Increment(fSleepingJobWorkerThreads);
@@ -28727,6 +28799,7 @@ begin
   finally
    fWakeUpConditionVariableLock.Release;
   end;
+{$endif}
  end else begin
   TPasMP.Yield;
  end;
@@ -28735,6 +28808,11 @@ end;
 procedure TPasRISCV.TJobManager.WakeUpAllWorkerThreads;
 begin
  if fSleepingJobWorkerThreads>0 then begin
+{$ifdef PasRISCVUseFutexEvents}
+  inc(fWakeUpCounter);
+  TPasMPMemoryBarrier.Write;
+  fWakeUpFutexEvent.WakeAll;
+{$else}
   fWakeUpConditionVariableLock.Acquire;
   try
    inc(fWakeUpCounter);
@@ -28743,6 +28821,7 @@ begin
   finally
    fWakeUpConditionVariableLock.Release;
   end;
+{$endif}
  end;
 end;
 
@@ -97811,6 +97890,13 @@ var Mask:TPasRISCVUInt64;
 begin
  Mask:=TPasRISCVUInt64(1) shl TPasRISCVUInt64(aInterruptValue);
  if (TPasMPInterlocked.ExchangeBitwiseOr(fState.PendingIRQs,Mask) and Mask)=0 then begin
+{$ifdef PasRISCVUseFutexEvents}
+{$if defined(PasRISCVInterruptWakeupHardening)}
+  TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
+{$ifend}
+  TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fMachine.fAllHARTMask);
+  fMachine.fWakeUpFutexEvent.WakeAll;
+{$else}
   fMachine.fWakeUpConditionVariableLock.Acquire;
   try
 {$if defined(PasRISCVInterruptWakeupHardening)}
@@ -97822,6 +97908,7 @@ begin
   finally
    fMachine.fWakeUpConditionVariableLock.Release;
   end;
+{$endif}
  end;
 end;
 
@@ -98560,6 +98647,32 @@ begin
 
     if Remaining>SleepThreshold then begin
 
+{$ifdef PasRISCVUseFutexEvents}
+     while (Remaining>SleepThreshold) and ((TPasMPInterlocked.Read(fMachine.fRunState) and (fHARTMask or TPasRISCVUInt32(RUNSTATE_GLOBAL_MASK)))=RUNSTATE_RUNNING) do begin
+      WaitForDuration:=ConvertScale(Remaining-SleepThreshold,CLOCK_FREQUENCY,1000);
+      if WaitForDuration>0 then begin
+{$if defined(PasRISCVInterruptWakeupHardening)}
+       WakeGeneration:=TPasMPInterlocked.Read(fMachine.fWakeGeneration);
+{$ifend}
+       fMachine.fWakeUpFutexEvent.Wait(WaitForDuration*1000000);
+       fMachine.fWakeUpFutexEvent.Reset;
+{$if defined(PasRISCVInterruptWakeupHardening)}
+       if TPasMPInterlocked.Read(fMachine.fWakeGeneration)<>WakeGeneration then begin
+        Remaining:=0;
+        break;
+       end;
+{$ifend}
+      end;
+      TimeB:=fACLINTDevice.GetTime;
+      Difference:=TimeB-TimeA;
+      if Remaining>Difference then begin
+       dec(Remaining,Difference);
+      end else begin
+       Remaining:=0;
+      end;
+      TimeA:=TimeB;
+     end;
+{$else}
      fMachine.fWakeUpConditionVariableLock.Acquire;
      try
       while (Remaining>SleepThreshold) and ((TPasMPInterlocked.Read(fMachine.fRunState) and (fHARTMask or TPasRISCVUInt32(RUNSTATE_GLOBAL_MASK)))=RUNSTATE_RUNNING) do begin
@@ -98588,6 +98701,7 @@ begin
      finally
       fMachine.fWakeUpConditionVariableLock.Release;
      end;
+{$endif}
 
      TimeB:=fACLINTDevice.GetTime;
      Difference:=TimeB-TimeA;
@@ -98644,12 +98758,17 @@ end;
 
 procedure TPasRISCV.THART.SleepPause;
 begin
+{$ifdef PasRISCVUseFutexEvents}
+ fMachine.fWakeUpFutexEvent.Wait(10000000);
+ fMachine.fWakeUpFutexEvent.Reset;
+{$else}
  fMachine.fWakeUpConditionVariableLock.Acquire;
  try
   fMachine.fWakeUpConditionVariable.Wait(fMachine.fWakeUpConditionVariableLock,10);
  finally
   fMachine.fWakeUpConditionVariableLock.Release;
  end;
+{$endif}
 end;
 
 procedure TPasRISCV.THART.CheckTimers;
@@ -98985,6 +99104,17 @@ begin
 
  while not fExecutionThread.Terminated do begin
 
+{$ifdef PasRISCVUseFutexEvents}
+   repeat
+    HARTActive:=(TPasMPInterlocked.Read(TPasMPUInt32(fMachine.fHARTActiveMask)) and fHARTMask)<>0;
+    if HARTActive or fExecutionThread.Terminated then begin
+     break;
+    end else begin
+     fMachine.fHARTWakeUpFutexEvent.Wait(TPasMPUInt64($ffffffffffffffff));
+     fMachine.fHARTWakeUpFutexEvent.Reset;
+    end;
+   until false;
+{$else}
   fMachine.fHARTWakeUpConditionVariableLock.Acquire;
   try
    repeat
@@ -98998,6 +99128,7 @@ begin
   finally
    fMachine.fHARTWakeUpConditionVariableLock.Release;
   end;
+{$endif}
 
   if fExecutionThread.Terminated then begin
    break;
@@ -99005,6 +99136,10 @@ begin
 
    if HARTActive then begin
 
+{$ifdef PasRISCVUseFutexEvents}
+    TPasMPInterlocked.BitwiseOr(TPasMPUInt32(fMachine.fHARTRunningMask),TPasMPUInt32(fHARTMask));
+    fMachine.fHARTStatusChangeFutexEvent.WakeAll;
+{$else}
     fMachine.fHARTStatusChangeConditionVariableLock.Acquire;
     try
      TPasMPInterlocked.BitwiseOr(TPasMPUInt32(fMachine.fHARTRunningMask),TPasMPUInt32(fHARTMask));
@@ -99012,11 +99147,17 @@ begin
     finally
      fMachine.fHARTStatusChangeConditionVariableLock.Release;
     end;
+{$endif}
 
 //  Sleep(fHARTID*10);
 
     Execute;
 
+{$ifdef PasRISCVUseFutexEvents}
+    TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fMachine.fHARTActiveMask),not TPasMPUInt32(fHARTMask));
+    TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fMachine.fHARTRunningMask),not TPasMPUInt32(fHARTMask));
+    fMachine.fHARTStatusChangeFutexEvent.WakeAll;
+{$else}
     fMachine.fHARTStatusChangeConditionVariableLock.Acquire;
     try
      TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fMachine.fHARTActiveMask),not TPasMPUInt32(fHARTMask));
@@ -99025,6 +99166,7 @@ begin
     finally
      fMachine.fHARTStatusChangeConditionVariableLock.Release;
     end;
+{$endif}
 
    end else begin
     TPasMP.Yield;
@@ -99034,6 +99176,11 @@ begin
 
  end;
 
+{$ifdef PasRISCVUseFutexEvents}
+ TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fMachine.fHARTActiveMask),not TPasMPUInt32(fHARTMask));
+ TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fMachine.fHARTRunningMask),not TPasMPUInt32(fHARTMask));
+ fMachine.fHARTStatusChangeFutexEvent.WakeAll;
+{$else}
  fMachine.fHARTStatusChangeConditionVariableLock.Acquire;
  try
   TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fMachine.fHARTActiveMask),not TPasMPUInt32(fHARTMask));
@@ -99042,6 +99189,7 @@ begin
  finally
   fMachine.fHARTStatusChangeConditionVariableLock.Release;
  end;
+{$endif}
 
 end;
 
@@ -103397,11 +103545,16 @@ begin
 {$endif}
 {$endif}
 
+{$ifdef PasRISCVUseFutexEvents}
+ fHARTWakeUpFutexEvent:=TPasMPFutexEvent.Create;
+ fHARTStatusChangeFutexEvent:=TPasMPFutexEvent.Create;
+{$else}
  fHARTWakeUpConditionVariableLock:=TPasMPConditionVariableLock.Create;
  fHARTWakeUpConditionVariable:=TPasMPConditionVariable.Create;
 
  fHARTStatusChangeConditionVariableLock:=TPasMPConditionVariableLock.Create;
  fHARTStatusChangeConditionVariable:=TPasMPConditionVariable.Create;
+{$endif}
 
  fOnReboot:=nil;
 
@@ -103409,9 +103562,13 @@ begin
 
  fOnCPUException:=nil;
 
+{$ifdef PasRISCVUseFutexEvents}
+ fWakeUpFutexEvent:=TPasMPFutexEvent.Create;
+{$else}
  fWakeUpConditionVariableLock:=TPasMPConditionVariableLock.Create;
 
  fWakeUpConditionVariable:=TPasMPConditionVariable.Create;
+{$endif}
 
 {$if defined(PasRISCVInterruptWakeupHardening)}
  fWakeGeneration:=0;
@@ -103897,14 +104054,23 @@ begin
 
  FreeAndNil(fRandomGeneratorLock);
 
+{$ifdef PasRISCVUseFutexEvents}
+ FreeAndNil(fHARTWakeUpFutexEvent);
+ FreeAndNil(fHARTStatusChangeFutexEvent);
+{$else}
  FreeAndNil(fHARTWakeUpConditionVariable);
  FreeAndNil(fHARTWakeUpConditionVariableLock);
 
  FreeAndNil(fHARTStatusChangeConditionVariable);
  FreeAndNil(fHARTStatusChangeConditionVariableLock);
+{$endif}
 
+{$ifdef PasRISCVUseFutexEvents}
+ FreeAndNil(fWakeUpFutexEvent);
+{$else}
  FreeAndNil(fWakeUpConditionVariable);
  FreeAndNil(fWakeUpConditionVariableLock);
+{$endif}
 
  inherited Destroy;
 
@@ -103922,6 +104088,16 @@ begin
   end;
  end;
 
+{$ifdef PasRISCVUseFutexEvents}
+ TPasMPInterlocked.BitwiseOr(TPasMPUInt32(fRunState),RUNSTATE_POWEROFF);
+ TPasMPInterlocked.BitwiseAnd(TPasMPUInt32(fRunState),not TPasMPUInt32(RUNSTATE_RUNNING));
+ fHARTWakeUpFutexEvent.WakeAll;
+
+ while TPasMPInterlocked.Read(fHARTRunningMask)<>0 do begin
+  fHARTStatusChangeFutexEvent.Wait(100000000);
+  fHARTStatusChangeFutexEvent.Reset;
+ end;
+{$else}
  fHARTWakeUpConditionVariableLock.Acquire;
  try
   TPasMPInterlocked.BitwiseOr(TPasMPUInt32(fRunState),RUNSTATE_POWEROFF);
@@ -103939,6 +104115,7 @@ begin
  finally
   fHARTStatusChangeConditionVariableLock.Release;
  end;
+{$endif}
 
  for Index:=0 to length(fHARTs)-1 do begin
   HART:=fHARTs[Index];
@@ -105844,12 +106021,16 @@ begin
     TPasMPInterlocked.ExchangeBitwiseAndOr(fRunState,TPasMPUInt32(not TPasMPUInt32(RUNSTATE_PAUSING)),TPasMPUInt32(RUNSTATE_PAUSED));
 
 {$if defined(PasRISCVSingleStepRunStateWait)}
+{$ifdef PasRISCVUseFutexEvents}
+    fHARTStatusChangeFutexEvent.WakeAll;
+{$else}
     fHARTStatusChangeConditionVariableLock.Acquire;
     try
      fHARTStatusChangeConditionVariable.Broadcast;
     finally
      fHARTStatusChangeConditionVariableLock.Release;
     end;
+{$endif}
 {$ifend}
 
 {$ifdef PasRISCVStepDebugOutput}
@@ -105884,6 +106065,12 @@ begin
     end;
 {$endif}
 
+{$ifdef PasRISCVUseFutexEvents}
+    while (fRunState and (RUNSTATE_RUNNING or RUNSTATE_PAUSED or RUNSTATE_POWEROFF))=(RUNSTATE_RUNNING or RUNSTATE_PAUSED) do begin
+     fWakeUpFutexEvent.Wait(100000000);
+     fWakeUpFutexEvent.Reset;
+    end;
+{$else}
     fWakeUpConditionVariableLock.Acquire;
     try
      while (fRunState and (RUNSTATE_RUNNING or RUNSTATE_PAUSED or RUNSTATE_POWEROFF))=(RUNSTATE_RUNNING or RUNSTATE_PAUSED) do begin
@@ -105892,6 +106079,7 @@ begin
     finally
      fWakeUpConditionVariableLock.Release;
     end;
+{$endif}
 
 {$ifdef PasRISCVStepDebugOutput}
     RunStateValue:=TPasMPInterlocked.Read(fRunState);
@@ -105943,6 +106131,15 @@ begin
     end;
 {$endif}
 
+{$ifdef PasRISCVUseFutexEvents}
+    TPasMPInterlocked.BitwiseOr(fHARTActiveMask,fAllHARTMask);
+    fHARTWakeUpFutexEvent.WakeAll;
+
+    while TPasMPInterlocked.Read(fHARTRunningMask)<>0 do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+{$else}
     fHARTWakeUpConditionVariableLock.Acquire;
     try
      TPasMPInterlocked.BitwiseOr(fHARTActiveMask,fAllHARTMask);
@@ -105959,6 +106156,7 @@ begin
     finally
      fHARTStatusChangeConditionVariableLock.Release;
     end;
+{$endif}
 
     if assigned(fEventThread) then begin
      fEventThread.Start;
@@ -105995,6 +106193,10 @@ begin
 {$endif}
 
 {$ifdef PasRISCVSingleStepCounter}
+{$ifdef PasRISCVUseFutexEvents}
+    TPasMPInterlocked.Increment(fSingleStepCounter);
+    fHARTStatusChangeFutexEvent.WakeAll;
+{$else}
     fHARTStatusChangeConditionVariableLock.Acquire;
     try
      TPasMPInterlocked.Increment(fSingleStepCounter);
@@ -106003,16 +106205,21 @@ begin
      fHARTStatusChangeConditionVariableLock.Release;
     end;
 {$endif}
+{$endif}
 
     TPasMPInterlocked.ExchangeBitwiseAndOr(fRunState,TPasMPUInt32(not TPasMPUInt32(RUNSTATE_SINGLESTEP)),TPasMPUInt32(RUNSTATE_PAUSING));
 
 {$if defined(PasRISCVSingleStepRunStateWait)}
+{$ifdef PasRISCVUseFutexEvents}
+    fHARTStatusChangeFutexEvent.WakeAll;
+{$else}
     fHARTStatusChangeConditionVariableLock.Acquire;
     try
      fHARTStatusChangeConditionVariable.Broadcast;
     finally
      fHARTStatusChangeConditionVariableLock.Release;
     end;
+{$endif}
 {$ifend}
 
    end;
@@ -106056,11 +106263,22 @@ end;
 
 procedure TPasRISCV.WakeUp;
 begin
+{$ifdef PasRISCVUseFutexEvents}
+ fWakeUpFutexEvent.WakeAll;
+{$else}
  fWakeUpConditionVariable.Broadcast;
+{$endif}
 end;
 
 procedure TPasRISCV.InterruptAndWakeUp;
 begin
+{$ifdef PasRISCVUseFutexEvents}
+{$if defined(PasRISCVInterruptWakeupHardening)}
+ TPasMPInterlocked.Increment(fWakeGeneration);
+{$ifend}
+ TPasMPInterlocked.BitwiseOr(fRunState,fAllHARTMask);
+ fWakeUpFutexEvent.WakeAll;
+{$else}
  fWakeUpConditionVariableLock.Acquire;
  try
 {$if defined(PasRISCVInterruptWakeupHardening)}
@@ -106071,6 +106289,7 @@ begin
  finally
   fWakeUpConditionVariableLock.Release;
  end;
+{$endif}
 end;
 
 procedure TPasRISCV.EventTick(const aForce:Boolean);
@@ -106151,6 +106370,24 @@ begin
      fEventThread.Stop;
     end;
 
+{$ifdef PasRISCVUseFutexEvents}
+
+{$ifdef PasRISCVStepDebugOutput}
+     RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+     WriteLn('DBG QueuePause wait start running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));
+{$endif}
+
+    while TPasMPInterlocked.Read(fHARTRunningMask)<>0 do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+
+{$ifdef PasRISCVStepDebugOutput}
+     RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+     WriteLn('DBG QueuePause wait done running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));     
+{$endif}
+
+{$else}
     fHARTStatusChangeConditionVariableLock.Acquire;
     try
 
@@ -106171,6 +106408,7 @@ begin
     finally
      fHARTStatusChangeConditionVariableLock.Release;
     end;
+{$endif}
 
    end;
 
@@ -106220,6 +106458,24 @@ begin
     fEventThread.Stop;
    end;
 
+{$ifdef PasRISCVUseFutexEvents}
+
+{$ifdef PasRISCVStepDebugOutput}
+    RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+    WriteLn('DBG Pause wait start running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));
+{$endif}
+
+    while TPasMPInterlocked.Read(fHARTRunningMask)<>0 do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+
+{$ifdef PasRISCVStepDebugOutput}
+    RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+    WriteLn('DBG Pause wait done running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));
+{$endif}
+
+{$else}
    fHARTStatusChangeConditionVariableLock.Acquire;
    try
 
@@ -106240,6 +106496,7 @@ begin
    finally
     fHARTStatusChangeConditionVariableLock.Release;
    end;
+{$endif}
 
   end;
 
@@ -106280,6 +106537,26 @@ begin
 
   if aWaitUntilRunning {$if defined(PasRISCVSingleStepRunStateWait)}and ((TPasMPInterlocked.Read(fRunState) and RUNSTATE_SINGLESTEP)=0){$ifend} then begin
 
+{$ifdef PasRISCVUseFutexEvents}
+
+{$ifdef PasRISCVStepDebugOutput}
+    RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+    AllMaskValue:=fAllHARTMask;
+    WriteLn('DBG Resume wait start running=0x'+LowerCase(IntToHex(RunningMaskValue,8))+
+            ' all=0x'+LowerCase(IntToHex(AllMaskValue,8)));
+{$endif}
+
+    while (TPasMPInterlocked.Read(fHARTRunningMask) and fAllHARTMask)<>fAllHARTMask do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+
+{$ifdef PasRISCVStepDebugOutput}
+    RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+    WriteLn('DBG Resume wait done running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));
+{$endif}
+
+{$else}
    fHARTStatusChangeConditionVariableLock.Acquire;
    try
 
@@ -106302,6 +106579,7 @@ begin
    finally
     fHARTStatusChangeConditionVariableLock.Release;
    end;
+{$endif}
 
    if assigned(fEventThread) then begin
     fEventThread.Start;
@@ -106353,6 +106631,12 @@ begin
     fEventThread.Stop;
    end;
 
+{$ifdef PasRISCVUseFutexEvents}
+    while TPasMPInterlocked.Read(fSingleStepCounter)=StepCounter do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+{$else}
    fHARTStatusChangeConditionVariableLock.Acquire;
    try
     while TPasMPInterlocked.Read(fSingleStepCounter)=StepCounter do begin
@@ -106361,6 +106645,7 @@ begin
    finally
     fHARTStatusChangeConditionVariableLock.Release;
    end;
+{$endif}
 
   end;
 
@@ -106374,6 +106659,41 @@ begin
     fEventThread.Stop;
    end;
 
+{$ifdef PasRISCVUseFutexEvents}
+
+{$if defined(PasRISCVSingleStepRunStateWait)}
+
+{$ifdef PasRISCVStepDebugOutput}
+    RunStateValue:=TPasMPInterlocked.Read(fRunState);
+    WriteLn('DBG SingleStep wait start runstate=0x'+LowerCase(IntToHex(RunStateValue,8)));
+{$endif}
+    while (TPasMPInterlocked.Read(fRunState) and (RUNSTATE_SINGLESTEP or RUNSTATE_PAUSED))=RUNSTATE_SINGLESTEP do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+{$ifdef PasRISCVStepDebugOutput}
+    RunStateValue:=TPasMPInterlocked.Read(fRunState);
+    WriteLn('DBG SingleStep wait done runstate=0x'+LowerCase(IntToHex(RunStateValue,8)));
+{$endif}
+
+{$else}
+
+{$ifdef PasRISCVStepDebugOutput}
+    RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+    WriteLn('DBG SingleStep wait start running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));
+{$endif}
+    while TPasMPInterlocked.Read(fHARTRunningMask)<>0 do begin
+     fHARTStatusChangeFutexEvent.Wait(100000000);
+     fHARTStatusChangeFutexEvent.Reset;
+    end;
+{$ifdef PasRISCVStepDebugOutput}
+    RunningMaskValue:=TPasMPInterlocked.Read(fHARTRunningMask);
+    WriteLn('DBG SingleStep wait done running=0x'+LowerCase(IntToHex(RunningMaskValue,8)));
+{$endif}
+
+{$ifend}
+
+{$else}
    fHARTStatusChangeConditionVariableLock.Acquire;
    try
 
@@ -106410,6 +106730,7 @@ begin
    finally
     fHARTStatusChangeConditionVariableLock.Release;
    end;
+{$endif}
 
   end;
 
