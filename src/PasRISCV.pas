@@ -325,7 +325,9 @@ unit PasRISCV;
 
 {$define NVMELevelTriggeredPCIEInterrupts}
 
-{$define PasRISCVUseFutexEvents} // Use TPasMPFutexEvent instead of TPasMPConditionVariable+Lock
+{$ifdef Linux}
+ {-$define PasRISCVUseFutexEvents} // Use TPasMPFutexEvent instead of TPasMPConditionVariable+Lock
+{$endif}
 
 {-$define NVMeSyncProcessing} // NVMe: process commands synchronously in doorbell handler (no job manager dispatch)
 
