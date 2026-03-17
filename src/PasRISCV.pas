@@ -29547,7 +29547,7 @@ begin
    PreparePRP(aCommand,(TPasRISCVUInt64(NLB)+1) shl NVME_LBA_SHIFT);
    while PRPAvail(aCommand)>0 do begin
     Size:=0;
-    Buffer:=GetPRPRegion(aCommand,Size,Opcode=NVM_WRITE);
+    Buffer:=GetPRPRegion(aCommand,Size,Opcode=NVM_READ);
     if assigned(Buffer) then begin
      if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
       if Opcode=NVM_WRITE then begin
