@@ -97891,18 +97891,21 @@ begin
  if (TPasMPInterlocked.ExchangeBitwiseOr(fState.PendingIRQs,Mask) and Mask)=0 then begin
 {$ifdef PasRISCVUseFutexEvents}
 {$if defined(PasRISCVInterruptWakeupHardening)}
-  TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
+//TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
 {$ifend}
-  TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fMachine.fAllHARTMask);
+//RestartExecution;
+  TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fHARTMask);
+//TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fMachine.fAllHARTMask);
   fMachine.fWakeUpFutexEvent.WakeAll;
 {$else}
   fMachine.fWakeUpConditionVariableLock.Acquire;
   try
 {$if defined(PasRISCVInterruptWakeupHardening)}
-   TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
+// TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
 {$ifend}
 // RestartExecution;
-   TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fMachine.fAllHARTMask);
+   TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fHARTMask);
+// TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fMachine.fAllHARTMask);
    fMachine.fWakeUpConditionVariable.Broadcast;
   finally
    fMachine.fWakeUpConditionVariableLock.Release;
