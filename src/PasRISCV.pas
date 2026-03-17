@@ -18748,7 +18748,6 @@ begin
   Remain:=aCount;
   BufferPointer:=@aBuffer;
   while Remain>0 do begin
-   UpdateMapView;
    ToDo:=Remain;
    if (aOffset+ToDo)>(fCurrentViewOffset+fCurrentViewSize) then begin
     ToDo:=(fCurrentViewOffset+fCurrentViewSize)-aOffset;
