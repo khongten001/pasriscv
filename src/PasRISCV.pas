@@ -1037,8 +1037,16 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
      TPasRISCVStringHashMap<TPasRISCVHashMapValue>=class(TPasRISCVHashMap<RawByteString,TPasRISCVHashMapValue>);
 {$endif}
 
+     { TPasRISCVRandomAccessStream }
+     TPasRISCVRandomAccessStream=class(TStream)
+      public
+       function CanRandomAccess:Boolean; virtual; abstract;
+       function RandomAccessRead(aOffset:TPasRISCVInt64;var aBuffer;aCount:TPasRISCVInt64):TPasRISCVInt64; virtual; abstract;
+       function RandomAccessWrite(aOffset:TPasRISCVInt64;const aBuffer;aCount:TPasRISCVInt64):TPasRISCVInt64; virtual; abstract;
+     end;
+
      { TPasRISCVFileMappedStream }
-     TPasRISCVFileMappedStream=class(TStream)
+     TPasRISCVFileMappedStream=class(TPasRISCVRandomAccessStream)
       public
        const DefaultViewSize=64 shl 20; // 64MB
       private
@@ -1073,6 +1081,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
        function Read(var aBuffer;aCount:TPasRISCVInt32):TPasRISCVInt32; override;
        function Write(const aBuffer;aCount:TPasRISCVInt32):TPasRISCVInt32; override;
        function Seek(const aOffset:TPasRISCVInt64;aOrigin:TSeekOrigin):TPasRISCVInt64; override;
+       function CanRandomAccess:Boolean; override;
+       function RandomAccessRead(aOffset:TPasRISCVInt64;var aBuffer;aCount:TPasRISCVInt64):TPasRISCVInt64; override;
+       function RandomAccessWrite(aOffset:TPasRISCVInt64;const aBuffer;aCount:TPasRISCVInt64):TPasRISCVInt64; override;
        property Memory:Pointer read fMemory;
        property MemoryViewOffset:TPasRISCVInt64 read fCurrentViewOffset;
        property MemoryViewSize:TPasRISCVInt64 read fCurrentViewSize;
@@ -4057,7 +4068,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               procedure AdminCommand(const aCommand:PNVMeCommand);
               procedure IOCommand(const aCommand:PNVMeCommand);
               procedure ProcessCommand(const aCommand:TNVMeDeviceCommand);
-              procedure ProcessQueue(const aSubmissionQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16;const aLocking:Boolean);
+              procedure ProcessQueue(const aSubmissionQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16;const aLocking,aInThread:Boolean);
               procedure Doorbell(const aQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16);
               procedure CheckMaskedIRQs(const aMask:TPasRISCVUInt32);
               function OnLoad(const aPCIMemoryDevice:TPCIMemoryDevice;const aAddress:TPasRISCVUInt64;const aSize:TPasRISCVUInt64):TPasRISCVUInt64;
@@ -18672,6 +18683,68 @@ begin
  end;
 end;
 
+function TPasRISCVFileMappedStream.CanRandomAccess:Boolean;
+begin
+ result:=assigned(fMemory) and (fCurrentViewOffset=0) and (fCurrentViewSize>=fSize);
+end;
+
+function TPasRISCVFileMappedStream.RandomAccessRead(aOffset:TPasRISCVInt64;var aBuffer;aCount:TPasRISCVInt64):TPasRISCVInt64;
+var Remain,ToDo:TPasRISCVInt32;
+    BufferPointer:PAnsiChar;
+begin
+ if assigned(fMemory) and (fCurrentViewOffset=0) and (fCurrentViewSize>=fSize) then begin
+{ fPosition:=0;
+  UpdateMapView;}
+  if (aOffset+aCount)>Size then begin
+   aCount:=fSize-aOffset;
+  end;
+  Remain:=aCount;
+  BufferPointer:=@aBuffer;
+  while Remain>0 do begin
+   ToDo:=Remain;
+   if (aOffset+ToDo)>(fCurrentViewOffset+fCurrentViewSize) then begin
+    ToDo:=(fCurrentViewOffset+fCurrentViewSize)-aOffset;
+   end;
+   Move(PPasRISCVUInt8Array(fMemory)^[aOffset-fCurrentViewOffset],BufferPointer^,ToDo);
+   inc(aOffset,ToDo);
+   inc(BufferPointer,ToDo);
+   dec(Remain,ToDo);
+  end;
+  result:=aCount;
+ end else begin
+  raise Exception.Create('No data available');
+ end;
+end;
+
+function TPasRISCVFileMappedStream.RandomAccessWrite(aOffset:TPasRISCVInt64;const aBuffer;aCount:TPasRISCVInt64):TPasRISCVInt64;
+var Remain,ToDo:TPasRISCVInt32;
+    BufferPointer:PAnsiChar;
+begin
+ if assigned(fMemory) and (fCurrentViewOffset=0) and (fCurrentViewSize>=fSize) then begin
+{ fPosition:=0;
+  UpdateMapView;}
+  if (aOffset+aCount)>Size then begin
+   aCount:=fSize-aOffset;
+  end;
+  Remain:=aCount;
+  BufferPointer:=@aBuffer;
+  while Remain>0 do begin
+   UpdateMapView;
+   ToDo:=Remain;
+   if (aOffset+ToDo)>(fCurrentViewOffset+fCurrentViewSize) then begin
+    ToDo:=(fCurrentViewOffset+fCurrentViewSize)-aOffset;
+   end;
+   Move(BufferPointer^,PPasRISCVUInt8Array(fMemory)^[aOffset-fCurrentViewOffset],ToDo);
+   inc(aOffset,ToDo);
+   inc(BufferPointer,ToDo);
+   dec(Remain,ToDo);
+  end;
+  result:=aCount;
+ end else begin
+  raise Exception.Create('No data available');
+ end;
+end;
+
 { TPasRISCVAudioWAVStreamDump }
 
 constructor TPasRISCVAudioWAVStreamDump.Create(const aSampleRate:TPasRISCVInt32;const aStream:TStream;const aDoFreeStream:boolean=true);
@@ -28528,7 +28601,7 @@ begin
       end;
 
       TPasRISCV.TJobQueueItem.TJobType.NVMeDeviceQueue:begin
-       TPasRISCV.TNVMeDevice(Item.fObject).ProcessQueue(Item.fNVMeDeviceQueue,Item.fNVMeDeviceQueueValue,true);
+       TPasRISCV.TNVMeDevice(Item.fObject).ProcessQueue(Item.fNVMeDeviceQueue,Item.fNVMeDeviceQueueValue,true,true);
       end;
 
       TPasRISCV.TJobQueueItem.TJobType.NVMeDeviceCommand:begin
@@ -29398,16 +29471,24 @@ begin
     Size:=0;
     Buffer:=GetPRPRegion(aCommand,Size);
     if assigned(Buffer) then begin
-     fStreamLock.Acquire;
-     try
-      fStream.Seek(Pos,soBeginning);
+     if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
       if Opcode=NVM_WRITE then begin
-       Temporary:=fStream.Write(Buffer^,Size);
+       Temporary:=TPasRISCVRandomAccessStream(fStream).RandomAccessWrite(Pos,Buffer^,Size);
       end else begin
-       Temporary:=fStream.Read(Buffer^,Size);
+       Temporary:=TPasRISCVRandomAccessStream(fStream).RandomAccessRead(Pos,Buffer^,Size);
       end;
-     finally
-      fStreamLock.Release;
+     end else begin
+      fStreamLock.Acquire;
+      try
+       fStream.Seek(Pos,soBeginning);
+       if Opcode=NVM_WRITE then begin
+        Temporary:=fStream.Write(Buffer^,Size);
+       end else begin
+        Temporary:=fStream.Read(Buffer^,Size);
+       end;
+      finally
+       fStreamLock.Release;
+      end;
      end;
      if Temporary<>Size then begin
       CompleteCommand(aCommand,SC_DATA_ERR);
@@ -29444,20 +29525,33 @@ begin
        Pos:=TPasRISCVUInt64(PPasRISCVUInt32(@PPasRISCVUInt8Array(Buffer)^[Temporary+4])^) shl NVME_LBA_SHIFT;
        ToDo:=PPasRISCVUInt64(@PPasRISCVUInt8Array(Buffer)^[Temporary+8])^ shl NVME_LBA_SHIFT;
        if ToDo>0 then begin
-        fStreamLock.Acquire;
-        try
-         fStream.Seek(Pos,soBeginning);
+        if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
          while ToDo>0 do begin
           if ToDo<SizeOf(TZeroBuffer) then begin
            Size:=ToDo;
           end else begin
            Size:=SizeOf(TZeroBuffer);
           end;
-          fStream.Write(ZeroBuffer[0],Size);
+          TPasRISCVRandomAccessStream(fStream).RandomAccessWrite(Pos,ZeroBuffer[0],Size);
+          inc(Pos,Size);
           dec(ToDo,Size);
          end;
-        finally
-         fStreamLock.Release;
+        end else begin
+         fStreamLock.Acquire;
+         try
+          fStream.Seek(Pos,soBeginning);
+          while ToDo>0 do begin
+           if ToDo<SizeOf(TZeroBuffer) then begin
+            Size:=ToDo;
+           end else begin
+            Size:=SizeOf(TZeroBuffer);
+           end;
+           fStream.Write(ZeroBuffer[0],Size);
+           dec(ToDo,Size);
+          end;
+         finally
+          fStreamLock.Release;
+         end;
         end;
        end;
        inc(Temporary,16);
@@ -29513,7 +29607,7 @@ begin
 
 end;
 
-procedure TPasRISCV.TNVMeDevice.ProcessQueue(const aSubmissionQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16;const aLocking:Boolean);
+procedure TPasRISCV.TNVMeDevice.ProcessQueue(const aSubmissionQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16;const aLocking,aInThread:Boolean);
 var Queue:PNVMeQueue;
     QueueHead:TPasRISCVUInt32;
     Command:TNVMeDeviceCommand;
@@ -29532,7 +29626,9 @@ begin
   ProcessCommand(Command);
 {$else}
   if aSubmissionQueueID<>0 then begin
-   if not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCommand(self,Command) then begin
+   if aInThread then begin
+    ProcessCommand(Command);
+   end else if not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCommand(self,Command) then begin
     ProcessCommand(Command);
    end;
   end else begin
@@ -29581,11 +29677,11 @@ begin
      Queue^.Tail:=aValue;
      TPasMPMemoryBarrier.ReadDependency;
 {$ifdef NVMeSyncProcessing}
-     ProcessQueue(SubmissionQueueID,aValue,false);
+     ProcessQueue(SubmissionQueueID,aValue,false,true);
 {$else}
 //   ProcessQueue(SubmissionQueueID,aValue,false);
      if not fBus.fMachine.fJobManager.EnqueueNVMeDeviceQueue(self,SubmissionQueueID,aValue) then begin
-      ProcessQueue(SubmissionQueueID,aValue,false);
+      ProcessQueue(SubmissionQueueID,aValue,false,false);
      end;
 {$endif}
     end;
@@ -36557,14 +36653,18 @@ begin
   end;
   Buf:=aBuf;
   if Remain>0 then begin
-   fStreamLock.Acquire;
-   try
-    result:=fStream.Seek(Offset,soBeginning)=Offset;
-    if result then begin
-     result:=fStream.Read(Buf^,Remain)=Remain;
+   if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
+    result:=TPasRISCVRandomAccessStream(fStream).RandomAccessRead(Offset,Buf^,Remain)=Remain;
+   end else begin
+    fStreamLock.Acquire;
+    try
+     result:=fStream.Seek(Offset,soBeginning)=Offset;
+     if result then begin
+      result:=fStream.Read(Buf^,Remain)=Remain;
+     end;
+    finally
+     fStreamLock.Release;
     end;
-   finally
-    fStreamLock.Release;
    end;
   end else begin
    result:=true;
@@ -36593,14 +36693,18 @@ begin
   end;
   Buf:=aBuf;
   if Remain>0 then begin
-   fStreamLock.Acquire;
-   try
-    result:=fStream.Seek(Offset,soBeginning)=Offset;
-    if result then begin
-     result:=fStream.Write(Buf^,Remain)=Remain;
+   if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
+    result:=TPasRISCVRandomAccessStream(fStream).RandomAccessWrite(Offset,Buf^,Remain)=Remain;
+   end else begin
+    fStreamLock.Acquire;
+    try
+     result:=fStream.Seek(Offset,soBeginning)=Offset;
+     if result then begin
+      result:=fStream.Write(Buf^,Remain)=Remain;
+     end;
+    finally
+     fStreamLock.Release;
     end;
-   finally
-    fStreamLock.Release;
    end;
   end else begin
    result:=true;
@@ -36611,7 +36715,7 @@ begin
 end;
 
 function TPasRISCV.TVirtIOBlockDevice.DeviceRecv(const aQueueIndex,aDescriptorIndex,aReadSize,aWriteSize:TPasRISCVUInt64):Boolean;
-var Len,Count,WriteSize,Size,ToDo:TPasRISCVUInt64;
+var Len,Count,WriteSize,Offset,Size,ToDo:TPasRISCVUInt64;
     BlockRequestHeader:TVirtIOBlockDevice.TBlockRequestHeader;
     Value:TPasRISCVUInt8;
     Buf:Pointer;
@@ -36758,9 +36862,8 @@ begin
    TVirtIOBlockDevice.VIRTIO_BLK_T_SECURE_ERASE:begin
     if CopyMemoryFromQueue(@VirtIOBlkDiscardWriteZeroes,aQueueIndex,aDescriptorIndex,SizeOf(TBlockRequestHeader),SizeOf(TVirtIOBlkDiscardWriteZeroes)) then begin
      Value:=VIRTIO_BLK_S_OK;
-     fStreamLock.Acquire;
-     try
-      fStream.Seek(VirtIOBlkDiscardWriteZeroes.Sector*512,soBeginning);
+     if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
+      Offset:=VirtIOBlkDiscardWriteZeroes.Sector*512;
       Size:=VirtIOBlkDiscardWriteZeroes.CountSectors*512;
       while Size>0 do begin
        if Size<SizeOf(TZeroBuffer) then begin
@@ -36768,14 +36871,33 @@ begin
        end else begin
         ToDo:=SizeOf(TZeroBuffer);
        end;
-       if fStream.Write(ZeroBuffer[0],ToDo)<>ToDo then begin
+       if TPasRISCVRandomAccessStream(fStream).RandomAccessWrite(Offset,ZeroBuffer[0],ToDo)<>ToDo then begin
         Value:=VIRTIO_BLK_S_IOERR;
         break;
        end;
+       inc(Offset,ToDo);
        dec(Size,ToDo);
       end;
-     finally
-      fStreamLock.Release;
+     end else begin
+      fStreamLock.Acquire;
+      try
+       fStream.Seek(VirtIOBlkDiscardWriteZeroes.Sector*512,soBeginning);
+       Size:=VirtIOBlkDiscardWriteZeroes.CountSectors*512;
+       while Size>0 do begin
+        if Size<SizeOf(TZeroBuffer) then begin
+         ToDo:=Size;
+        end else begin
+         ToDo:=SizeOf(TZeroBuffer);
+        end;
+        if fStream.Write(ZeroBuffer[0],ToDo)<>ToDo then begin
+         Value:=VIRTIO_BLK_S_IOERR;
+         break;
+        end;
+        dec(Size,ToDo);
+       end;
+      finally
+       fStreamLock.Release;
+      end;
      end;
     end else begin
      NotifyDeviceNeedsReset;
