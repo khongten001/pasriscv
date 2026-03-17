@@ -4056,8 +4056,8 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               procedure CompleteCommand(const aCommand:PNVMeCommand;const aStatus:TPasRISCVUInt32;const aCommandSpecific:TPasRISCVUInt32=0);
               procedure PreparePRP(const aCommand:PNVMeCommand;const aSize:TPasRISCVUInt64);
               function PRPAvail(const aCommand:PNVMeCommand):TPasRISCVUInt64;
-              function ParsePRPRegion(const aCommand:PNVMeCommand):TPasRISCVUInt64;
-              function GetPRPRegion(const aCommand:PNVMeCommand;out aSize:TPasRISCVUInt64):Pointer;
+              function ParsePRPRegion(const aCommand:PNVMeCommand;const aWrite:Boolean):TPasRISCVUInt64;
+              function GetPRPRegion(const aCommand:PNVMeCommand;out aSize:TPasRISCVUInt64;const aWrite:Boolean):Pointer;
               procedure CopyToPRP(const aCommand:PNVMeCommand;const aData:Pointer;const aSize:TPasRISCVUInt64);
               procedure Identify(const aCommand:PNVMeCommand);
               procedure CreateIOSubmissionQueue(const aCommand:PNVMeCommand);
@@ -29060,7 +29060,7 @@ begin
  result:=aCommand^.PRP.Size-aCommand^.PRP.Current;
 end;
 
-function TPasRISCV.TNVMeDevice.ParsePRPRegion(const aCommand:PNVMeCommand):TPasRISCVUInt64;
+function TPasRISCV.TNVMeDevice.ParsePRPRegion(const aCommand:PNVMeCommand;const aWrite:Boolean):TPasRISCVUInt64;
 var PRP:PNVMePRPCtx;
     Len:TPasRISCVUInt64;
     PRP2Addr:TPasRISCVUInt64;
@@ -29102,7 +29102,7 @@ begin
 
   if not assigned(DMA) then begin
    // Obtain DMA mapping of the PRP list
-   DMA:=GetGlobalDirectMemoryAccessPointer(PRP2Addr and not NVME_PAGE_MASK,NVME_PAGE_SIZE,true,nil);
+   DMA:=GetGlobalDirectMemoryAccessPointer(PRP2Addr and not NVME_PAGE_MASK,NVME_PAGE_SIZE,aWrite,nil);
    if not assigned(DMA) then begin
     // PRP list DMA error
     break;
@@ -29138,14 +29138,14 @@ begin
 
 end;
 
-function TPasRISCV.TNVMeDevice.GetPRPRegion(const aCommand:PNVMeCommand;out aSize:TPasRISCVUInt64):Pointer;
+function TPasRISCV.TNVMeDevice.GetPRPRegion(const aCommand:PNVMeCommand;out aSize:TPasRISCVUInt64;const aWrite:Boolean):Pointer;
 var Address:TPasRISCVUInt64;
     Size:TPasRISCVUInt64;
 begin
  Address:=aCommand^.PRP.PRP1;
- Size:=ParsePRPRegion(aCommand);
+ Size:=ParsePRPRegion(aCommand,aWrite);
  if Size<>0 then begin
-  result:=GetGlobalDirectMemoryAccessPointer(Address,Size,true,nil);
+  result:=GetGlobalDirectMemoryAccessPointer(Address,Size,aWrite,nil);
   inc(aCommand^.PRP.Current,Size);
   if assigned(result) then begin
    aSize:=Size;
@@ -29165,7 +29165,7 @@ begin
  Remaining:=aSize;
  while true do begin
   RegSize:=0;
-  Dest:=GetPRPRegion(aCommand,RegSize);
+  Dest:=GetPRPRegion(aCommand,RegSize,true);
   if not assigned(Dest) then begin
    break;
   end;
@@ -29469,7 +29469,7 @@ begin
    PreparePRP(aCommand,(TPasRISCVUInt64(NLB)+1) shl NVME_LBA_SHIFT);
    while PRPAvail(aCommand)>0 do begin
     Size:=0;
-    Buffer:=GetPRPRegion(aCommand,Size);
+    Buffer:=GetPRPRegion(aCommand,Size,Opcode=NVM_WRITE);
     if assigned(Buffer) then begin
      if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
       if Opcode=NVM_WRITE then begin
@@ -29518,7 +29518,7 @@ begin
     PreparePRP(aCommand,((TPasRISCVUInt64(PPasRISCVUInt8Array(aCommand^.Ptr)^[SQE_CDW10]))+1) shl 4);
     while PRPAvail(aCommand)>0 do begin
      Size:=0;
-     Buffer:=GetPRPRegion(aCommand,Size);
+     Buffer:=GetPRPRegion(aCommand,Size,true);
      if assigned(Buffer) then begin
       Temporary:=0;
       while (Temporary+16)<=Size do begin
