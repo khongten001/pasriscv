@@ -29449,8 +29449,23 @@ procedure TPasRISCV.TNVMeDevice.DrainCompletionQueue(const aQueueID:TPasRISCVUIn
 var QueueState:PNVMeDeferredCompletionQueueState;
     Completion:TNVMeDeferredCompletion;
 begin
+
  if aQueueID<=NVME_IO_QUEUES then begin
+
   QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+
+{  while QueueState^.Count<>0 do begin
+   Completion:=QueueState^.Items[QueueState^.Head];
+   if not TryPostCompletionToQueue(aQueueID,Completion.SqHeadID,Completion.CmdID,Completion.Status,Completion.CommandSpecific) then begin
+    break;
+   end;
+   inc(QueueState^.Head);
+   if QueueState^.Head>=QueueState^.Capacity then begin
+    QueueState^.Head:=0;
+   end;
+   dec(QueueState^.Count);
+  end;}
+
   while CompletionQueueHasDeferredCompletions(aQueueID) do begin
    Completion:=QueueState^.Items[QueueState^.Head];
    if not TryPostCompletionToQueue(aQueueID,Completion.SqHeadID,Completion.CmdID,Completion.Status,Completion.CommandSpecific) then begin
@@ -29458,8 +29473,11 @@ begin
    end;
    DequeueDeferredCompletion(aQueueID,Completion);
   end;
+
   UpdateCompletionQueueIRQ(aQueueID);
+
  end;
+
 end;
 
 procedure TPasRISCV.TNVMeDevice.ScheduleCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
@@ -29481,26 +29499,26 @@ var QueueState:PNVMeDeferredCompletionQueueState;
     Reschedule:Boolean;
 begin
  if aQueueID<=NVME_IO_QUEUES then begin
+  Reschedule:=false;
   QueueState:=@fDeferredCompletionQueueStates[aQueueID];
   fCompletionQueueLock.Acquire;
   try
    TPasMPInterlocked.Write(QueueState^.Scheduled,0);
-   DrainCompletionQueue(aQueueID);
-   if CompletionQueueHasDeferredCompletions(aQueueID) then begin
-    if fSynchronousCompletionQueueProcessing then begin
-     ScheduleCompletionQueue(aQueueID,true);
-     Reschedule:=false;
-    end else begin
+   if fSynchronousCompletionQueueProcessing then begin
+    repeat
+     DrainCompletionQueue(aQueueID);
+    until not CompletionQueueHasDeferredCompletions(aQueueID);
+   end else begin
+    DrainCompletionQueue(aQueueID);
+    if CompletionQueueHasDeferredCompletions(aQueueID) then begin
      Reschedule:=true;
     end;
-   end else begin
-    Reschedule:=false;
    end;
   finally
    fCompletionQueueLock.Release;
   end;
   if Reschedule then begin
-   ScheduleCompletionQueue(aQueueID,true);
+   ScheduleCompletionQueue(aQueueID,false);
   end;
   TPasMPInterlocked.Decrement(fThreads);
  end;
