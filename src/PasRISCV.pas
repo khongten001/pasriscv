@@ -324,6 +324,7 @@ unit PasRISCV;
 {-$define PasRISCVInterruptNoSafetyNet}           // Disable 100Hz FullUpdate safety net in EventTick
 
 {$define NVMELevelTriggeredPCIEInterrupts}
+{$define NVMeCompletionQueueBitfields}
 
 {$ifdef Linux}
  {-$define PasRISCVUseFutexEvents} // Use TPasMPFutexEvent instead of TPasMPConditionVariable+Lock
@@ -4094,6 +4095,10 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               fSubmissionQueues:array[0..NVME_IO_QUEUES] of TNVMeQueue;
               fCompletionQueues:array[0..NVME_IO_QUEUES] of TNVMeQueue;
               fDeferredCompletionQueueStates:array[0..NVME_IO_QUEUES] of TNVMeDeferredCompletionQueueState;
+{$ifdef NVMeCompletionQueueBitfields}
+              fCompletionQueuePendingBits:TPasMPUInt32;
+              fCompletionQueueScheduledBits:TPasMPUInt32;
+{$endif}
               fSynchronousCompletionQueueProcessing:Boolean;
               fStreamLock:TPasMPSlimReaderWriterLock;
               fStream:TStream;
@@ -4126,8 +4131,11 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               function CompletionQueueHasDeferredCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
               function CompletionQueueHasVisibleCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
               function CompletionQueueHasPendingCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+{$ifdef NVMeCompletionQueueBitfields}
+              procedure UpdateCompletionQueuePendingState(const aQueueID:TPasRISCVUInt32);
+{$endif}
               function TryPostCompletionToQueue(const aQueueID,aSqHeadID,aCmdID,aStatus,aCommandSpecific:TPasRISCVUInt32):Boolean;
-              procedure UpdateCompletionQueueIRQ(const aQueueID:TPasRISCVUInt32);
+              procedure UpdateCompletionQueueIRQ(const aQueueID:TPasRISCVUInt32{$ifdef NVMeCompletionQueueBitfields};const aPendingBits:TPasRISCVUInt32{$endif});
               procedure DrainCompletionQueue(const aQueueID:TPasRISCVUInt32);
               procedure ScheduleCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
               procedure ProcessCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
@@ -29163,6 +29171,11 @@ begin
   QueueState^.Scheduled:=0;
  end;
 
+{$ifdef NVMeCompletionQueueBitfields}
+ fCompletionQueuePendingBits:=0;
+ fCompletionQueueScheduledBits:=0;
+{$endif}
+
  fStreamLock:=TPasMPSlimReaderWriterLock.Create;
 
  fStream:=TMemoryStream.Create;
@@ -29206,6 +29219,10 @@ begin
   QueueState^.Tail:=0;
   QueueState^.Count:=0;
   QueueState^.Scheduled:=0;
+{$ifdef NVMeCompletionQueueBitfields}
+  TPasMPInterlocked.BitwiseAnd(fCompletionQueuePendingBits,not (TPasMPUInt32(1) shl aQueueID));
+  TPasMPInterlocked.BitwiseAnd(fCompletionQueueScheduledBits,not (TPasMPUInt32(1) shl aQueueID));
+{$endif}
  end;
 end;
 
@@ -29280,6 +29297,10 @@ begin
   QueueState^.Tail:=Tail;
   inc(QueueState^.Count);
 
+{$ifdef NVMeCompletionQueueBitfields}
+  UpdateCompletionQueuePendingState(aQueueID);
+{$endif}
+
  end;
 
 end;
@@ -29309,6 +29330,10 @@ begin
 
    dec(QueueState^.Count);
 
+{$ifdef NVMeCompletionQueueBitfields}
+   UpdateCompletionQueuePendingState(aQueueID);
+{$endif}
+
    result:=true;
 
   end else begin
@@ -29336,8 +29361,31 @@ end;
 
 function TPasRISCV.TNVMeDevice.CompletionQueueHasPendingCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
 begin
+{$ifdef NVMeCompletionQueueBitfields}
+ if aQueueID<=NVME_IO_QUEUES then begin
+  result:=(TPasMPInterlocked.Read(fCompletionQueuePendingBits) and (TPasMPUInt32(1) shl aQueueID))<>0;
+ end else begin
+  result:=false;
+ end;
+{$else}
  result:=CompletionQueueHasVisibleCompletions(aQueueID) or CompletionQueueHasDeferredCompletions(aQueueID);
+{$endif}
 end;
+
+{$ifdef NVMeCompletionQueueBitfields}
+procedure TPasRISCV.TNVMeDevice.UpdateCompletionQueuePendingState(const aQueueID:TPasRISCVUInt32);
+var PendingMask:TPasMPUInt32;
+begin
+ if aQueueID<=NVME_IO_QUEUES then begin
+  PendingMask:=TPasMPUInt32(1) shl aQueueID;
+  if CompletionQueueHasVisibleCompletions(aQueueID) or CompletionQueueHasDeferredCompletions(aQueueID) then begin
+   TPasMPInterlocked.BitwiseOr(fCompletionQueuePendingBits,PendingMask);
+  end else begin
+   TPasMPInterlocked.BitwiseAnd(fCompletionQueuePendingBits,not PendingMask);
+  end;
+ end;
+end;
+{$endif}
 
 function TPasRISCV.TNVMeDevice.TryPostCompletionToQueue(const aQueueID,aSqHeadID,aCmdID,aStatus,aCommandSpecific:TPasRISCVUInt32):Boolean;
 var Queue:PNVMeQueue;
@@ -29396,7 +29444,7 @@ begin
 
 end;
 
-procedure TPasRISCV.TNVMeDevice.UpdateCompletionQueueIRQ(const aQueueID:TPasRISCVUInt32);
+procedure TPasRISCV.TNVMeDevice.UpdateCompletionQueueIRQ(const aQueueID:TPasRISCVUInt32{$ifdef NVMeCompletionQueueBitfields};const aPendingBits:TPasRISCVUInt32{$endif});
 var Queue:PNVMeQueue;
 {$ifndef NVMELevelTriggeredPCIEInterrupts}
     IRQVector,IRQMask:TPasRISCVUInt32;
@@ -29406,37 +29454,41 @@ begin
  Queue:=GetCompletionQueue(aQueueID);
  if assigned(Queue) then begin
 
-  if CompletionQueueHasPendingCompletions(aQueueID) then begin
+  if {$ifdef NVMeCompletionQueueBitfields}
+      (aPendingBits and (TPasRISCVUInt32(1) shl aQueueID))<>0
+     {$else}
+      CompletionQueueHasPendingCompletions(aQueueID)
+     {$endif}then begin
 
- {$ifdef NVMELevelTriggeredPCIEInterrupts}
+{$ifdef NVMELevelTriggeredPCIEInterrupts}
 
    Queue^.RaiseIRQ(self);
- {$ifdef PasRISCVDumpNVMeIO}
+{$ifdef PasRISCVDumpNVMeIO}
    //writeln(StdErr,'NVMe IRQ raised at ',GetTickCount64,'ms');
- {$endif}
+{$endif}
 
- {$else}
+{$else}
 
    IRQVector:=Queue^.Data.IRQ shr 16;
    IRQMask:=TPasRISCVUInt32(1) shl (IRQVector and $1f);
    if (fIRQMask and IRQMask)=0 then begin
     SendIRQ(0,IRQMask);
- {$ifdef PasRISCVDumpNVMeIO}
+{$ifdef PasRISCVDumpNVMeIO}
     //writeln(StdErr,'NVMe IRQ sent at ',GetTickCount64,'ms');
- {$endif}
+{$endif}
 
    end;
 
- {$endif}
+{$endif}
 
   end else begin
 
- {$ifdef NVMELevelTriggeredPCIEInterrupts}
+{$ifdef NVMELevelTriggeredPCIEInterrupts}
    Queue^.LowerIRQ(self);
- {$ifdef PasRISCVDumpNVMeIO}
+{$ifdef PasRISCVDumpNVMeIO}
    //writeln(StdErr,'NVMe IRQ lowered at ',GetTickCount64,'ms');
- {$endif}
- {$endif}
+{$endif}
+{$endif}
 
   end;
 
@@ -29473,7 +29525,10 @@ begin
    DequeueDeferredCompletion(aQueueID,Completion);
   end;
 
-  UpdateCompletionQueueIRQ(aQueueID);
+{$ifdef NVMeCompletionQueueBitfields}
+  UpdateCompletionQueuePendingState(aQueueID);
+{$endif}
+  UpdateCompletionQueueIRQ(aQueueID{$ifdef NVMeCompletionQueueBitfields},TPasMPInterlocked.Read(fCompletionQueuePendingBits){$endif});
 
  end;
 
@@ -29481,15 +29536,29 @@ end;
 
 procedure TPasRISCV.TNVMeDevice.ScheduleCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
 var QueueState:PNVMeDeferredCompletionQueueState;
+{$ifdef NVMeCompletionQueueBitfields}
+    ScheduledMask:TPasMPUInt32;
+{$endif}
 begin
  if aQueueID<=NVME_IO_QUEUES then begin
   QueueState:=@fDeferredCompletionQueueStates[aQueueID];
-  if TPasMPInterlocked.CompareExchange(QueueState^.Scheduled,1,0)=0 then begin
-   TPasMPInterlocked.Increment(fThreads);
-   if aInThread or not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCompletionQueue(self,aQueueID) then begin
-    ProcessCompletionQueue(aQueueID,aInThread);
+{$ifdef NVMeCompletionQueueBitfields}
+  ScheduledMask:=TPasMPUInt32(1) shl aQueueID;
+  if (TPasMPInterlocked.ExchangeBitwiseOr(fCompletionQueueScheduledBits,ScheduledMask) and ScheduledMask)=0 then begin
+{$endif}
+   if TPasMPInterlocked.CompareExchange(QueueState^.Scheduled,1,0)=0 then begin
+    TPasMPInterlocked.Increment(fThreads);
+    if aInThread or not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCompletionQueue(self,aQueueID) then begin
+     ProcessCompletionQueue(aQueueID,aInThread);
+    end;
+   end else begin
+{$ifdef NVMeCompletionQueueBitfields}
+    TPasMPInterlocked.BitwiseAnd(fCompletionQueueScheduledBits,not ScheduledMask);
+{$endif}
    end;
+{$ifdef NVMeCompletionQueueBitfields}
   end;
+{$endif}
  end;
 end;
 
@@ -29503,6 +29572,9 @@ begin
   TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
   try
    TPasMPInterlocked.Write(QueueState^.Scheduled,0);
+{$ifdef NVMeCompletionQueueBitfields}
+   TPasMPInterlocked.BitwiseAnd(fCompletionQueueScheduledBits,not (TPasMPUInt32(1) shl aQueueID));
+{$endif}
    DrainCompletionQueue(aQueueID);
    if (not fSynchronousCompletionQueueProcessing) and CompletionQueueHasDeferredCompletions(aQueueID) then begin
     Reschedule:=true;
@@ -30296,9 +30368,21 @@ end;
 
 procedure TPasRISCV.TNVMeDevice.CheckMaskedIRQs(const aMask:TPasRISCVUInt32);
 var Index:TPasRISCVSizeInt;
+{$ifndef NVMeCompletionQueueBitfields}
     QueueState:PNVMeDeferredCompletionQueueState;
+{$else}
+    PendingBits:TPasRISCVUInt32;
+{$endif}
 begin
+{$ifdef NVMeCompletionQueueBitfields}
+ PendingBits:=TPasMPInterlocked.Read(fCompletionQueuePendingBits);
+{$endif}
  for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
+{$ifdef NVMeCompletionQueueBitfields}
+   if (aMask and (TPasRISCVUInt32(1) shl ((TPasMPInterlocked.Read(fCompletionQueues[Index].Data.IRQ) shr 16) and $1f)))<>0 then begin
+   UpdateCompletionQueueIRQ(Index,PendingBits);
+  end;
+{$else}
   QueueState:=@fDeferredCompletionQueueStates[Index];
   TPasMPMultipleReaderSingleWriterSpinLock.AcquireRead(QueueState^.Lock);
   try
@@ -30308,6 +30392,7 @@ begin
   finally
    TPasMPMultipleReaderSingleWriterSpinLock.ReleaseRead(QueueState^.Lock);
   end;
+{$endif}
  end;
 end;
 
