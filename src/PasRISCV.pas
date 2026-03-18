@@ -29487,7 +29487,7 @@ begin
   QueueState:=@fDeferredCompletionQueueStates[aQueueID];
   if TPasMPInterlocked.CompareExchange(QueueState^.Scheduled,1,0)=0 then begin
    TPasMPInterlocked.Increment(fThreads);
-   if aInThread or (not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCompletionQueue(self,aQueueID)) then begin
+   if aInThread or not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCompletionQueue(self,aQueueID) then begin
     ProcessCompletionQueue(aQueueID,aInThread);
    end;
   end;
