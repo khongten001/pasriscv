@@ -30300,13 +30300,13 @@ var Index:TPasRISCVSizeInt;
 begin
  for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
   QueueState:=@fDeferredCompletionQueueStates[Index];
-  TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
+  TPasMPMultipleReaderSingleWriterSpinLock.AcquireRead(QueueState^.Lock);
   try
    if (aMask and (TPasRISCVUInt32(1) shl ((TPasMPInterlocked.Read(fCompletionQueues[Index].Data.IRQ) shr 16) and $1f)))<>0 then begin
     UpdateCompletionQueueIRQ(Index);
    end;
   finally
-   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
+   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseRead(QueueState^.Lock);
   end;
  end;
 end;
