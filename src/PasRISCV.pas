@@ -29367,27 +29367,27 @@ begin
     NextTail:=0;
    end;
 
-    if NextTail<>QueueHead then begin
+   if NextTail<>QueueHead then begin
 
-     Address:=Queue^.GetAddress+(TPasRISCVUInt64(QueueTail) shl CQE_SIZE_SHIFT);
+    Address:=Queue^.GetAddress+(TPasRISCVUInt64(QueueTail) shl CQE_SIZE_SHIFT);
 
-     Ptr:=GetGlobalDirectMemoryAccessPointer(Address,CQE_SIZE,true,nil);
-     if assigned(Ptr) then begin
+    Ptr:=GetGlobalDirectMemoryAccessPointer(Address,CQE_SIZE,true,nil);
+    if assigned(Ptr) then begin
 
-      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CS])^:=aCommandSpecific;
-      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_RSVD])^:=0;
-      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_SQHD_SQID])^:=aSqHeadID;
-      TPasMPMemoryBarrier.Write;
-      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CID_PB_SF])^:=aCmdID or (aStatus shl CQE_SF_SHIFT) or ((Queue^.Phase and 1) shl 16);
-      TPasMPMemoryBarrier.Write;
-      TPasMPInterlocked.Write(Queue^.Tail,NextTail);
-      if NextTail=0 then begin
-       TPasMPInterlocked.Write(Queue^.Phase,Queue^.Phase xor 1);
-      end;
-
-      result:=true;
-
+     PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CS])^:=aCommandSpecific;
+     PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_RSVD])^:=0;
+     PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_SQHD_SQID])^:=aSqHeadID;
+     TPasMPMemoryBarrier.Write;
+     PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CID_PB_SF])^:=aCmdID or (aStatus shl CQE_SF_SHIFT) or ((Queue^.Phase and 1) shl 16);
+     TPasMPMemoryBarrier.Write;
+     TPasMPInterlocked.Write(Queue^.Tail,NextTail);
+     if NextTail=0 then begin
+      TPasMPInterlocked.Write(Queue^.Phase,Queue^.Phase xor 1);
      end;
+
+     result:=true;
+
+    end;
 
    end;
 
@@ -29502,8 +29502,8 @@ begin
   if Reschedule then begin
    ScheduleCompletionQueue(aQueueID,true);
   end;
+  TPasMPInterlocked.Decrement(fThreads);
  end;
- TPasMPInterlocked.Decrement(fThreads);
 end;
 
 procedure TPasRISCV.TNVMeDevice.ResetDevice;
