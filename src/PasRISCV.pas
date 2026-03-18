@@ -29150,6 +29150,16 @@ begin
 
  QueueTail:=TNVMeQueue.Enqueue(Queue^);
 
+ // Toggle the completion-queue phase bit when we wrap back to slot 0.
+ // In this implementation, QueueTail is the slot that is about to be written,
+ // so reaching slot 0 means the new CQ cycle starts here and this CQE must be
+ // published with the next phase value.
+ //
+ // QEMU updates the phase later, when it advances the tail past the last slot
+ // and wraps the internal tail pointer back to 0. PasRISCV does it earlier,
+ // right before writing slot 0. Both approaches are equivalent as long as the
+ // queue never overruns: PasRISCV stores the phase of the CQE being written,
+ // while QEMU stores the phase of the next insertion position.
  if QueueTail=0 then begin
   Queue^.Phase:=Queue^.Phase xor 1;
  end;
