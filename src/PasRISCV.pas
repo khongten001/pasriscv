@@ -4076,6 +4076,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                    PNVMeDeferredCompletion=^TNVMeDeferredCompletion;
                    TNVMeDeferredCompletionDynamicArray=array of TNVMeDeferredCompletion;
                    TNVMeDeferredCompletionQueueState=record
+                    Lock:TPasMPInt32;
                     Items:TNVMeDeferredCompletionDynamicArray;
                     Capacity:TPasRISCVUInt32;
                     Head:TPasRISCVUInt32;
@@ -4092,7 +4093,6 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               fSerial:array[0..11] of TPasRISCVRawByteChar;
               fSubmissionQueues:array[0..NVME_IO_QUEUES] of TNVMeQueue;
               fCompletionQueues:array[0..NVME_IO_QUEUES] of TNVMeQueue;
-              fCompletionQueueLock:TPasMPCriticalSection;
               fDeferredCompletionQueueStates:array[0..NVME_IO_QUEUES] of TNVMeDeferredCompletionQueueState;
               fSynchronousCompletionQueueProcessing:Boolean;
               fStreamLock:TPasMPSlimReaderWriterLock;
@@ -29154,6 +29154,7 @@ begin
 
  for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
   QueueState:=@fDeferredCompletionQueueStates[Index];
+  QueueState^.Lock:=0;
   QueueState^.Items:=nil;
   QueueState^.Capacity:=0;
   QueueState^.Head:=0;
@@ -29163,7 +29164,6 @@ begin
  end;
 
  fStreamLock:=TPasMPSlimReaderWriterLock.Create;
- fCompletionQueueLock:=TPasMPCriticalSection.Create;
 
  fStream:=TMemoryStream.Create;
 
@@ -29173,7 +29173,6 @@ destructor TPasRISCV.TNVMeDevice.Destroy;
 begin
  FreeAndNil(fStream);
  FreeAndNil(fStreamLock);
- FreeAndNil(fCompletionQueueLock);
  FreeAndNil(fFuncs[0]);
  inherited Destroy;
 end;
@@ -29501,7 +29500,7 @@ begin
  if aQueueID<=NVME_IO_QUEUES then begin
   Reschedule:=false;
   QueueState:=@fDeferredCompletionQueueStates[aQueueID];
-  fCompletionQueueLock.Acquire;
+  TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
   try
    TPasMPInterlocked.Write(QueueState^.Scheduled,0);
    DrainCompletionQueue(aQueueID);
@@ -29509,7 +29508,7 @@ begin
     Reschedule:=true;
    end;
   finally
-   fCompletionQueueLock.Release;
+   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
   end;
   if Reschedule then begin
    ScheduleCompletionQueue(aQueueID,false);
@@ -29524,42 +29523,57 @@ begin
  while TPasMPInterlocked.Read(fThreads)<>0 do begin
   sleep(1);
  end;
- fCompletionQueueLock.Acquire;
+
+ // Reset Admin Queues (keep address, size, data)
+ TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(fDeferredCompletionQueueStates[QUEUE_ADMIN].Lock);
  try
-  // Reset Admin Queues (keep address, size, data)
   fSubmissionQueues[QUEUE_ADMIN].Reset;
   fCompletionQueues[QUEUE_ADMIN].LowerIRQ(self);
   fCompletionQueues[QUEUE_ADMIN].Reset;
   ResetDeferredCompletionQueue(QUEUE_ADMIN);
-  // Reset IO Queues
-  for Index:=QUEUE_IO to NVME_IO_QUEUES do begin
+ finally
+  TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(fDeferredCompletionQueueStates[QUEUE_ADMIN].Lock);
+ end;
+
+ // Reset IO Queues
+ for Index:=QUEUE_IO to NVME_IO_QUEUES do begin
+  TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(fDeferredCompletionQueueStates[Index].Lock);
+  try
    fSubmissionQueues[Index].Setup(self,0,0,0);
    fCompletionQueues[Index].LowerIRQ(self);
    fCompletionQueues[Index].Setup(self,0,0,0);
    ResetDeferredCompletionQueue(Index);
+  finally
+   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(fDeferredCompletionQueueStates[Index].Lock);
   end;
- finally
-  fCompletionQueueLock.Release;
  end;
+
 end;
 
 procedure TPasRISCV.TNVMeDevice.CompleteCommand(const aCommand:PNVMeCommand;const aStatus:TPasRISCVUInt32;const aCommandSpecific:TPasRISCVUInt32=0);
-var CmdID:TPasRISCVUInt32;
+var QueueState:PNVMeDeferredCompletionQueueState;
+    CmdID:TPasRISCVUInt32;
 begin
 
- CmdID:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_CID])^;
- fCompletionQueueLock.Acquire;
- try
-  EnqueueDeferredCompletion(aCommand^.CompletionQueueID,aCommand^.SqHeadID,CmdID,aStatus,aCommandSpecific);
-  if fSynchronousCompletionQueueProcessing then begin
-   DrainCompletionQueue(aCommand^.CompletionQueueID);
-  end;
- finally
-  fCompletionQueueLock.Release;
- end;
+ if aCommand^.CompletionQueueID<=NVME_IO_QUEUES then begin
 
- if not fSynchronousCompletionQueueProcessing then begin
-  ScheduleCompletionQueue(aCommand^.CompletionQueueID,false);
+  CmdID:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_CID])^;
+
+  QueueState:=@fDeferredCompletionQueueStates[aCommand^.CompletionQueueID];
+  TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
+  try
+   EnqueueDeferredCompletion(aCommand^.CompletionQueueID,aCommand^.SqHeadID,CmdID,aStatus,aCommandSpecific);
+   if fSynchronousCompletionQueueProcessing then begin
+    DrainCompletionQueue(aCommand^.CompletionQueueID);
+   end;
+  finally
+   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
+  end;
+
+  if not fSynchronousCompletionQueueProcessing then begin
+   ScheduleCompletionQueue(aCommand^.CompletionQueueID,false);
+  end;
+
  end;
 
 end;
@@ -29845,6 +29859,7 @@ procedure TPasRISCV.TNVMeDevice.CreateIOCompletionQueue(const aCommand:PNVMeComm
 var Address:TPasRISCVUInt64;
     CompletionQueueID,CompletionQueueSize,CompletionQueueFlag:TPasRISCVUInt32;
     Queue:PNVMeQueue;
+    QueueState:PNVMeDeferredCompletionQueueState;
 begin
  Address:=PPasRISCVUInt64(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_PRP1])^;
  CompletionQueueID:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_CDW10])^;
@@ -29857,17 +29872,18 @@ begin
   CompleteCommand(aCommand,SC_BAD_FIELD);
  end else{$endif}if CompletionQueueSize=0 then begin
   CompleteCommand(aCommand,SC_BAD_QUEUE_SIZE);
- end else if (CompletionQueueID=0) or (not assigned(Queue)) or (Queue^.GetSize<>0) then begin
+ end else if (CompletionQueueID=0) or (not assigned(Queue)) or (CompletionQueueID>NVME_IO_QUEUES) or (Queue^.GetSize<>0) then begin
   // Completion queue ID invalid or already in use
   CompleteCommand(aCommand,SC_BAD_QUEUE_ID);
  end else begin
-  fCompletionQueueLock.Acquire;
+  QueueState:=@fDeferredCompletionQueueStates[CompletionQueueID];
+  TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
   try
    ResetDeferredCompletionQueue(CompletionQueueID);
    Queue^.LowerIRQ(self);
    Queue^.Setup(self,Address,CompletionQueueSize+1,CompletionQueueFlag);
   finally
-   fCompletionQueueLock.Release;
+   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
   end;
   CompleteCommand(aCommand,SC_SUCCESS);
  end;
@@ -29876,6 +29892,7 @@ end;
 procedure TPasRISCV.TNVMeDevice.DeleteIOQueue(const aCommand:PNVMeCommand;const aIsCompletionQueue:Boolean);
 var QueueID:TPasRISCVUInt32;
     Queue:PNVMeQueue;
+    QueueState:PNVMeDeferredCompletionQueueState;
 begin
  QueueID:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_CDW10])^;
  if aIsCompletionQueue then begin
@@ -29883,16 +29900,17 @@ begin
  end else begin
   Queue:=GetSubmissionQueue(QueueID);
  end;
- if (QueueID=0) or not assigned(Queue) then begin
+ if (QueueID=0) or (QueueID>NVME_IO_QUEUES) or not assigned(Queue) then begin
   CompleteCommand(aCommand,SC_BAD_QUEUE_ID);
  end else begin
   if aIsCompletionQueue then begin
-   fCompletionQueueLock.Acquire;
+   QueueState:=@fDeferredCompletionQueueStates[QueueID];
+   TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
    try
     ResetDeferredCompletionQueue(QueueID);
     Queue^.LowerIRQ(self);
    finally
-    fCompletionQueueLock.Release;
+    TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
    end;
   end;
   Queue^.Setup(self,0,0,0);
@@ -30214,6 +30232,7 @@ end;
 procedure TPasRISCV.TNVMeDevice.Doorbell(const aQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16);
 var Queue:PNVMeQueue;
     QueueSize,SubmissionQueueID:TPasRISCVUInt32;
+    QueueState:PNVMeDeferredCompletionQueueState;
 begin
 
  SubmissionQueueID:=aQueueID shr 1;
@@ -30229,7 +30248,8 @@ begin
     TPasMPMemoryBarrier.ReadDependency;
     QueueSize:=Queue^.Size;
     if aValue<QueueSize then begin
-     fCompletionQueueLock.Acquire;
+     QueueState:=@fDeferredCompletionQueueStates[SubmissionQueueID];
+     TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
      try
       TPasMPMemoryBarrier.ReadWrite;
       Queue^.Head:=aValue;
@@ -30237,7 +30257,7 @@ begin
        DrainCompletionQueue(SubmissionQueueID);
       end;
      finally
-      fCompletionQueueLock.Release;
+      TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
      end;
      if not fSynchronousCompletionQueueProcessing then begin
       ScheduleCompletionQueue(SubmissionQueueID,false);
@@ -30276,16 +30296,18 @@ end;
 
 procedure TPasRISCV.TNVMeDevice.CheckMaskedIRQs(const aMask:TPasRISCVUInt32);
 var Index:TPasRISCVSizeInt;
+    QueueState:PNVMeDeferredCompletionQueueState;
 begin
- fCompletionQueueLock.Acquire;
- try
-  for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
+ for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
+  QueueState:=@fDeferredCompletionQueueStates[Index];
+  TPasMPMultipleReaderSingleWriterSpinLock.AcquireWrite(QueueState^.Lock);
+  try
    if (aMask and (TPasRISCVUInt32(1) shl ((TPasMPInterlocked.Read(fCompletionQueues[Index].Data.IRQ) shr 16) and $1f)))<>0 then begin
     UpdateCompletionQueueIRQ(Index);
    end;
+  finally
+   TPasMPMultipleReaderSingleWriterSpinLock.ReleaseWrite(QueueState^.Lock);
   end;
- finally
-  fCompletionQueueLock.Release;
  end;
 end;
 
