@@ -2914,13 +2914,18 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
             end;
             PNVMeDeviceCommand=^TNVMeDeviceCommand;
             TNVMeDeviceCommandDynamicArray=array of TNVMeDeviceCommand;
+            TNVMeDeviceCompletionQueue=record
+             QueueID:TPasRISCVUInt32;
+            end;
+            PNVMeDeviceCompletionQueue=^TNVMeDeviceCompletionQueue;
             TJobQueueItem=record
              public
               type TJobType=
                     (
                      VirtIODeviceQueue,
                      NVMeDeviceQueue,
-                     NVMeDeviceCommand
+                     NVMeDeviceCommand,
+                     NVMeDeviceCompletionQueue
                     );
              public
               fObject:TObject;
@@ -2934,6 +2939,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                );
                TJobType.NVMeDeviceCommand:(
                 fNVMeDeviceCommand:TNVMeDeviceCommand;
+               );
+               TJobType.NVMeDeviceCompletionQueue:(
+                fNVMeDeviceCompletionQueue:TNVMeDeviceCompletionQueue;
                );
             end;
             PJobQueueItem=^TJobQueueItem;
@@ -2973,6 +2981,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               function EnqueueVirtIODeviceQueue(const aVirtIODevice:TVirtIODevice;const aVirtIODeviceQueue:TPasRISCVUInt32):Boolean;
               function EnqueueNVMeDeviceQueue(const aNVMeDevice:TNVMeDevice;const aNVMeDeviceQueue,aNVMeDeviceQueueValue:TPasRISCVUInt32):Boolean;
               function EnqueueNVMeDeviceCommand(const aNVMeDevice:TNVMeDevice;const aNVMeDeviceCommand:TNVMeDeviceCommand):Boolean;
+              function EnqueueNVMeDeviceCompletionQueue(const aNVMeDevice:TNVMeDevice;const aNVMeDeviceCompletionQueue:TPasRISCVUInt32):Boolean;
               function EnqueueNVMeDeviceCommands(const aNVMeDevice:TNVMeDevice;const aNVMeDeviceCommands:TNVMeDeviceCommandDynamicArray;const aCount:TPasRISCVSizeInt):Boolean;
             end;
             { TFDT }
@@ -4058,6 +4067,23 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                     CompletionQueueID:TPasRISCVUInt32;
                    end;
                    PNVMeCommand=^TNVMeCommand;
+                   TNVMeDeferredCompletion=record
+                    SqHeadID:TPasRISCVUInt32;
+                    CmdID:TPasRISCVUInt32;
+                    Status:TPasRISCVUInt32;
+                    CommandSpecific:TPasRISCVUInt32;
+                   end;
+                   PNVMeDeferredCompletion=^TNVMeDeferredCompletion;
+                   TNVMeDeferredCompletionDynamicArray=array of TNVMeDeferredCompletion;
+                   TNVMeDeferredCompletionQueueState=record
+                    Items:TNVMeDeferredCompletionDynamicArray;
+                    Capacity:TPasRISCVUInt32;
+                    Head:TPasRISCVUInt32;
+                    Tail:TPasRISCVUInt32;
+                    Count:TPasRISCVUInt32;
+                    Scheduled:TPasRISCVUInt32;
+                   end;
+                   PNVMeDeferredCompletionQueueState=^TNVMeDeferredCompletionQueueState;
              private
               fThreads:TPasRISCVUInt32;
               fConf:TPasRISCVUInt32;
@@ -4066,6 +4092,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               fSerial:array[0..11] of TPasRISCVRawByteChar;
               fSubmissionQueues:array[0..NVME_IO_QUEUES] of TNVMeQueue;
               fCompletionQueues:array[0..NVME_IO_QUEUES] of TNVMeQueue;
+              fCompletionQueueLock:TPasMPCriticalSection;
+              fDeferredCompletionQueueStates:array[0..NVME_IO_QUEUES] of TNVMeDeferredCompletionQueueState;
+              fSynchronousCompletionQueueProcessing:Boolean;
               fStreamLock:TPasMPSlimReaderWriterLock;
               fStream:TStream;
              public
@@ -4090,6 +4119,18 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               procedure IOCommand(const aCommand:PNVMeCommand);
               procedure ProcessCommand(const aCommand:TNVMeDeviceCommand);
               procedure ProcessQueue(const aSubmissionQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16;const aLocking,aInThread:Boolean);
+              procedure ResetDeferredCompletionQueue(const aQueueID:TPasRISCVUInt32);
+              procedure EnsureDeferredCompletionQueueCapacity(const aQueueID,aCapacity:TPasRISCVUInt32);
+              procedure EnqueueDeferredCompletion(const aQueueID,aSqHeadID,aCmdID,aStatus,aCommandSpecific:TPasRISCVUInt32);
+              function DequeueDeferredCompletion(const aQueueID:TPasRISCVUInt32;out aCompletion:TNVMeDeferredCompletion):Boolean;
+              function CompletionQueueHasDeferredCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+              function CompletionQueueHasVisibleCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+              function CompletionQueueHasPendingCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+              function TryPostCompletionToQueue(const aQueueID,aSqHeadID,aCmdID,aStatus,aCommandSpecific:TPasRISCVUInt32):Boolean;
+              procedure UpdateCompletionQueueIRQ(const aQueueID:TPasRISCVUInt32);
+              procedure DrainCompletionQueue(const aQueueID:TPasRISCVUInt32);
+              procedure ScheduleCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
+              procedure ProcessCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
               procedure Doorbell(const aQueueID:TPasRISCVUInt32;const aValue:TPasRISCVUInt16);
               procedure CheckMaskedIRQs(const aMask:TPasRISCVUInt32);
               function OnLoad(const aPCIMemoryDevice:TPCIMemoryDevice;const aAddress:TPasRISCVUInt64;const aSize:TPasRISCVUInt64):TPasRISCVUInt64;
@@ -28717,6 +28758,10 @@ begin
        TPasRISCV.TNVMeDevice(Item.fObject).ProcessCommand(Item.fNVMeDeviceCommand);
       end;
 
+      TPasRISCV.TJobQueueItem.TJobType.NVMeDeviceCompletionQueue:begin
+       TPasRISCV.TNVMeDevice(Item.fObject).ProcessCompletionQueue(Item.fNVMeDeviceCompletionQueue.QueueID,true);
+      end;
+
       else begin
       end;
 
@@ -28785,6 +28830,8 @@ begin
    TPasRISCV.TJobQueueItem.TJobType.VirtIODeviceQueue:begin
    end;
    TPasRISCV.TJobQueueItem.TJobType.NVMeDeviceCommand:begin
+   end;
+   TPasRISCV.TJobQueueItem.TJobType.NVMeDeviceCompletionQueue:begin
    end;
    else begin
    end;
@@ -28927,6 +28974,22 @@ begin
 
 end;
 
+function TPasRISCV.TJobManager.EnqueueNVMeDeviceCompletionQueue(const aNVMeDevice:TNVMeDevice;const aNVMeDeviceCompletionQueue:TPasRISCVUInt32):Boolean;
+var Item:TJobQueueItem;
+begin
+
+ Item.fJobType:=TPasRISCV.TJobQueueItem.TJobType.NVMeDeviceCompletionQueue;
+ Item.fObject:=aNVMeDevice;
+ Item.fNVMeDeviceCompletionQueue.QueueID:=aNVMeDeviceCompletionQueue;
+
+ fQueue.Enqueue(Item);
+
+ WakeUpAllWorkerThreads;
+
+ result:=true;
+
+end;
+
 function TPasRISCV.TJobManager.EnqueueNVMeDeviceCommands(const aNVMeDevice:TNVMeDevice;const aNVMeDeviceCommands:TNVMeDeviceCommandDynamicArray;const aCount:TPasRISCVSizeInt):Boolean;
 var Item:TJobQueueItem;
     Index:TPasRISCVSizeInt;
@@ -28963,12 +29026,12 @@ begin
  repeat
   TPasMPMemoryBarrier.ReadDependency;
   Head:=TPasMPInterlocked.Read(aQueue.Head);
-  if (Head=Tail) or (Tail>Size) then begin
+  if (Head=Tail) or (Tail>=Size) then begin
    aEntry:=0;
    result:=false;
    exit;
   end;
-  if Head<Size then begin
+  if (Head+1)<Size then begin
    Next:=Head+1;
   end else begin
    Next:=0;
@@ -28985,7 +29048,7 @@ begin
  repeat
   TPasMPMemoryBarrier.ReadDependency;
   Tail:=TPasMPInterlocked.Read(aQueue.Tail);
-  if Tail<Size then begin
+  if (Tail+1)<Size then begin
    Next:=Tail+1;
   end else begin
    Next:=0;
@@ -29032,7 +29095,7 @@ procedure TPasRISCV.TNVMeDevice.TNVMeQueue.Reset;
 begin
  TPasMPInterlocked.Write(Head,0);
  TPasMPInterlocked.Write(Tail,0);
- TPasMPInterlocked.Write(Phase,0); // gets 1 initial, because Tail is initally also 0 (0=overflow flip indicator)
+ TPasMPInterlocked.Write(Phase,1);
 end;
 
 procedure TPasRISCV.TNVMeDevice.TNVMeQueue.Setup(const aNVMEDevice:TNVMEDevice;const aAddress:TPasRISCVUInt64;const aSize:TPasRISCVUInt32;const aData:TPasRISCVUInt32);
@@ -29051,6 +29114,7 @@ var FuncDesc:TPasRISCV.TPCIFuncDescriptor;
     BARRegion:TPasRISCV.PPCIBARRegion;
     PCG32:TPCG32;
     Index:TPasRISCVSizeInt;
+    QueueState:PNVMeDeferredCompletionQueueState;
 begin
  inherited Create(aBus);
 
@@ -29075,6 +29139,8 @@ begin
 
  fFuncs[0]:=TPasRISCV.TPCIFunc.Create(aBus,self,FuncDesc);
 
+ fSynchronousCompletionQueueProcessing:=false;
+
 {$ifdef NVMELevelTriggeredPCIEInterrupts}
  // Enable IEN on Admin Completion Queue
  fCompletionQueues[QUEUE_ADMIN].Data.IRQ:=CQ_FLAGS_IEN;
@@ -29086,7 +29152,18 @@ begin
   fSerial[Index]:=TPasRISCV.SerialChars[PCG32.GetUnbiasedBounded(36) mod 36];
  end;
 
+ for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
+  QueueState:=@fDeferredCompletionQueueStates[Index];
+  QueueState^.Items:=nil;
+  QueueState^.Capacity:=0;
+  QueueState^.Head:=0;
+  QueueState^.Tail:=0;
+  QueueState^.Count:=0;
+  QueueState^.Scheduled:=0;
+ end;
+
  fStreamLock:=TPasMPSlimReaderWriterLock.Create;
+ fCompletionQueueLock:=TPasMPCriticalSection.Create;
 
  fStream:=TMemoryStream.Create;
 
@@ -29096,6 +29173,7 @@ destructor TPasRISCV.TNVMeDevice.Destroy;
 begin
  FreeAndNil(fStream);
  FreeAndNil(fStreamLock);
+ FreeAndNil(fCompletionQueueLock);
  FreeAndNil(fFuncs[0]);
  inherited Destroy;
 end;
@@ -29118,76 +29196,358 @@ begin
  end;
 end;
 
+procedure TPasRISCV.TNVMeDevice.ResetDeferredCompletionQueue(const aQueueID:TPasRISCVUInt32);
+var QueueState:PNVMeDeferredCompletionQueueState;
+begin
+ if aQueueID<=NVME_IO_QUEUES then begin
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+  QueueState^.Items:=nil;
+  QueueState^.Capacity:=0;
+  QueueState^.Head:=0;
+  QueueState^.Tail:=0;
+  QueueState^.Count:=0;
+  QueueState^.Scheduled:=0;
+ end;
+end;
+
+procedure TPasRISCV.TNVMeDevice.EnsureDeferredCompletionQueueCapacity(const aQueueID,aCapacity:TPasRISCVUInt32);
+var QueueState:PNVMeDeferredCompletionQueueState;
+    RequiredCapacity,Index:TPasRISCVUInt32;
+    OldItems,NewItems:TNVMeDeferredCompletionDynamicArray;
+begin
+
+ if aQueueID<=NVME_IO_QUEUES then begin
+
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+
+  RequiredCapacity:=aCapacity;
+
+  if QueueState^.Capacity<RequiredCapacity then begin
+
+   if RequiredCapacity<(QueueState^.Count+1) then begin
+    RequiredCapacity:=QueueState^.Count+1;
+   end;
+
+   OldItems:=QueueState^.Items;
+
+   SetLength(NewItems,RequiredCapacity);
+
+   if (QueueState^.Count<>0) and (QueueState^.Capacity<>0) then begin
+    for Index:=0 to QueueState^.Count-1 do begin
+     NewItems[Index]:=OldItems[(QueueState^.Head+Index) mod QueueState^.Capacity];
+    end;
+   end;
+
+   QueueState^.Items:=NewItems;
+   QueueState^.Capacity:=RequiredCapacity;
+   QueueState^.Head:=0;
+   QueueState^.Tail:=QueueState^.Count;
+
+  end;
+
+ end;
+
+end;
+
+procedure TPasRISCV.TNVMeDevice.EnqueueDeferredCompletion(const aQueueID,aSqHeadID,aCmdID,aStatus,aCommandSpecific:TPasRISCVUInt32);
+var QueueState:PNVMeDeferredCompletionQueueState;
+    Capacity,Tail:TPasRISCVUInt32;
+begin
+ if aQueueID<=NVME_IO_QUEUES then begin
+
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+
+  Capacity:=QueueState^.Capacity;
+  if Capacity=0 then begin
+   Capacity:=16;
+  end else if Capacity<=QueueState^.Count then begin
+   Capacity:=RoundUpToPowerOfTwo(QueueState^.Count+1);
+  end;
+
+  EnsureDeferredCompletionQueueCapacity(aQueueID,Capacity);
+
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+
+  Tail:=QueueState^.Tail;
+  QueueState^.Items[Tail].SqHeadID:=aSqHeadID;
+  QueueState^.Items[Tail].CmdID:=aCmdID;
+  QueueState^.Items[Tail].Status:=aStatus;
+  QueueState^.Items[Tail].CommandSpecific:=aCommandSpecific;
+
+  inc(Tail);
+  if Tail>=QueueState^.Capacity then begin
+   Tail:=0;
+  end;
+  QueueState^.Tail:=Tail;
+  inc(QueueState^.Count);
+
+ end;
+
+end;
+
+function TPasRISCV.TNVMeDevice.DequeueDeferredCompletion(const aQueueID:TPasRISCVUInt32;out aCompletion:TNVMeDeferredCompletion):Boolean;
+var QueueState:PNVMeDeferredCompletionQueueState;
+    Head:TPasRISCVUInt32;
+begin
+
+ result:=false;
+
+ if aQueueID<=NVME_IO_QUEUES then begin
+
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+
+  if QueueState^.Count<>0 then begin
+
+   Head:=QueueState^.Head;
+   aCompletion:=QueueState^.Items[Head];
+
+   inc(Head);
+   if Head>=QueueState^.Capacity then begin
+    Head:=0;
+   end;
+
+   QueueState^.Head:=Head;
+
+   dec(QueueState^.Count);
+
+   result:=true;
+
+  end else begin
+
+   FillChar(aCompletion,SizeOf(TNVMeDeferredCompletion),#0);
+   result:=false;
+
+  end;
+
+ end;
+
+end;
+
+function TPasRISCV.TNVMeDevice.CompletionQueueHasDeferredCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+begin
+ result:=(aQueueID<=NVME_IO_QUEUES) and (fDeferredCompletionQueueStates[aQueueID].Count<>0);
+end;
+
+function TPasRISCV.TNVMeDevice.CompletionQueueHasVisibleCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+var Queue:PNVMeQueue;
+begin
+ Queue:=GetCompletionQueue(aQueueID);
+ result:=assigned(Queue) and (TPasMPInterlocked.Read(Queue^.Head)<>TPasMPInterlocked.Read(Queue^.Tail));
+end;
+
+function TPasRISCV.TNVMeDevice.CompletionQueueHasPendingCompletions(const aQueueID:TPasRISCVUInt32):Boolean;
+begin
+ result:=CompletionQueueHasVisibleCompletions(aQueueID) or CompletionQueueHasDeferredCompletions(aQueueID);
+end;
+
+function TPasRISCV.TNVMeDevice.TryPostCompletionToQueue(const aQueueID,aSqHeadID,aCmdID,aStatus,aCommandSpecific:TPasRISCVUInt32):Boolean;
+var Queue:PNVMeQueue;
+    QueueTail,QueueHead,QueueSize,NextTail:TPasRISCVUInt32;
+    Address:TPasRISCVUInt64;
+    Ptr:PPasRISCVUInt8;
+begin
+
+ result:=false;
+
+ Queue:=GetCompletionQueue(aQueueID);
+ if assigned(Queue) then begin
+
+  QueueSize:=TPasMPInterlocked.Read(Queue^.Size);
+  if QueueSize>1 then begin
+
+   QueueTail:=TPasMPInterlocked.Read(Queue^.Tail);
+   QueueHead:=TPasMPInterlocked.Read(Queue^.Head);
+   if QueueTail<QueueSize then begin
+    if (QueueTail+1)<QueueSize then begin
+     NextTail:=QueueTail+1;
+    end else begin
+     NextTail:=0;
+    end;
+   end else begin
+    NextTail:=0;
+   end;
+
+    if NextTail<>QueueHead then begin
+
+     Address:=Queue^.GetAddress+(TPasRISCVUInt64(QueueTail) shl CQE_SIZE_SHIFT);
+
+     Ptr:=GetGlobalDirectMemoryAccessPointer(Address,CQE_SIZE,true,nil);
+     if assigned(Ptr) then begin
+
+      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CS])^:=aCommandSpecific;
+      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_RSVD])^:=0;
+      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_SQHD_SQID])^:=aSqHeadID;
+      TPasMPMemoryBarrier.Write;
+      PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CID_PB_SF])^:=aCmdID or (aStatus shl CQE_SF_SHIFT) or ((Queue^.Phase and 1) shl 16);
+      TPasMPMemoryBarrier.Write;
+      TPasMPInterlocked.Write(Queue^.Tail,NextTail);
+      if NextTail=0 then begin
+       TPasMPInterlocked.Write(Queue^.Phase,Queue^.Phase xor 1);
+      end;
+
+      result:=true;
+
+     end;
+
+   end;
+
+  end;
+
+ end;
+
+end;
+
+procedure TPasRISCV.TNVMeDevice.UpdateCompletionQueueIRQ(const aQueueID:TPasRISCVUInt32);
+var Queue:PNVMeQueue;
+{$ifndef NVMELevelTriggeredPCIEInterrupts}
+    IRQVector,IRQMask:TPasRISCVUInt32;
+{$endif}
+begin
+
+ Queue:=GetCompletionQueue(aQueueID);
+ if assigned(Queue) then begin
+
+  if CompletionQueueHasPendingCompletions(aQueueID) then begin
+
+ {$ifdef NVMELevelTriggeredPCIEInterrupts}
+
+   Queue^.RaiseIRQ(self);
+ {$ifdef PasRISCVDumpNVMeIO}
+   //writeln(StdErr,'NVMe IRQ raised at ',GetTickCount64,'ms');
+ {$endif}
+
+ {$else}
+
+   IRQVector:=Queue^.Data.IRQ shr 16;
+   IRQMask:=TPasRISCVUInt32(1) shl (IRQVector and $1f);
+   if (fIRQMask and IRQMask)=0 then begin
+    SendIRQ(0,IRQMask);
+ {$ifdef PasRISCVDumpNVMeIO}
+    //writeln(StdErr,'NVMe IRQ sent at ',GetTickCount64,'ms');
+ {$endif}
+
+   end;
+
+ {$endif}
+
+  end else begin
+
+ {$ifdef NVMELevelTriggeredPCIEInterrupts}
+   Queue^.LowerIRQ(self);
+ {$ifdef PasRISCVDumpNVMeIO}
+   //writeln(StdErr,'NVMe IRQ lowered at ',GetTickCount64,'ms');
+ {$endif}
+ {$endif}
+
+  end;
+
+ end;
+
+end;
+
+procedure TPasRISCV.TNVMeDevice.DrainCompletionQueue(const aQueueID:TPasRISCVUInt32);
+var QueueState:PNVMeDeferredCompletionQueueState;
+    Completion:TNVMeDeferredCompletion;
+begin
+ if aQueueID<=NVME_IO_QUEUES then begin
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+  while CompletionQueueHasDeferredCompletions(aQueueID) do begin
+   Completion:=QueueState^.Items[QueueState^.Head];
+   if not TryPostCompletionToQueue(aQueueID,Completion.SqHeadID,Completion.CmdID,Completion.Status,Completion.CommandSpecific) then begin
+    break;
+   end;
+   DequeueDeferredCompletion(aQueueID,Completion);
+  end;
+  UpdateCompletionQueueIRQ(aQueueID);
+ end;
+end;
+
+procedure TPasRISCV.TNVMeDevice.ScheduleCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
+var QueueState:PNVMeDeferredCompletionQueueState;
+begin
+ if aQueueID<=NVME_IO_QUEUES then begin
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+  if TPasMPInterlocked.CompareExchange(QueueState^.Scheduled,1,0)=0 then begin
+   TPasMPInterlocked.Increment(fThreads);
+   if aInThread or (not fBus.fMachine.fJobManager.EnqueueNVMeDeviceCompletionQueue(self,aQueueID)) then begin
+    ProcessCompletionQueue(aQueueID,aInThread);
+   end;
+  end;
+ end;
+end;
+
+procedure TPasRISCV.TNVMeDevice.ProcessCompletionQueue(const aQueueID:TPasRISCVUInt32;const aInThread:Boolean);
+var QueueState:PNVMeDeferredCompletionQueueState;
+    Reschedule:Boolean;
+begin
+ if aQueueID<=NVME_IO_QUEUES then begin
+  QueueState:=@fDeferredCompletionQueueStates[aQueueID];
+  fCompletionQueueLock.Acquire;
+  try
+   TPasMPInterlocked.Write(QueueState^.Scheduled,0);
+   DrainCompletionQueue(aQueueID);
+   if CompletionQueueHasDeferredCompletions(aQueueID) then begin
+    if fSynchronousCompletionQueueProcessing then begin
+     ScheduleCompletionQueue(aQueueID,true);
+     Reschedule:=false;
+    end else begin
+     Reschedule:=true;
+    end;
+   end else begin
+    Reschedule:=false;
+   end;
+  finally
+   fCompletionQueueLock.Release;
+  end;
+  if Reschedule then begin
+   ScheduleCompletionQueue(aQueueID,true);
+  end;
+ end;
+ TPasMPInterlocked.Decrement(fThreads);
+end;
+
 procedure TPasRISCV.TNVMeDevice.ResetDevice;
 var Index:TPasRISCVSizeInt;
 begin
  while TPasMPInterlocked.Read(fThreads)<>0 do begin
   sleep(1);
  end;
- // Reset Admin Queues (keep address, size, data)
- fSubmissionQueues[QUEUE_ADMIN].Reset;
- fCompletionQueues[QUEUE_ADMIN].LowerIRQ(self);
- fCompletionQueues[QUEUE_ADMIN].Reset;
- // Reset IO Queues
- for Index:=QUEUE_IO to NVME_IO_QUEUES do begin
-  fSubmissionQueues[Index].Setup(self,0,0,0);
-  fCompletionQueues[Index].LowerIRQ(self);
-  fCompletionQueues[Index].Setup(self,0,0,0);
+ fCompletionQueueLock.Acquire;
+ try
+  // Reset Admin Queues (keep address, size, data)
+  fSubmissionQueues[QUEUE_ADMIN].Reset;
+  fCompletionQueues[QUEUE_ADMIN].LowerIRQ(self);
+  fCompletionQueues[QUEUE_ADMIN].Reset;
+  ResetDeferredCompletionQueue(QUEUE_ADMIN);
+  // Reset IO Queues
+  for Index:=QUEUE_IO to NVME_IO_QUEUES do begin
+   fSubmissionQueues[Index].Setup(self,0,0,0);
+   fCompletionQueues[Index].LowerIRQ(self);
+   fCompletionQueues[Index].Setup(self,0,0,0);
+   ResetDeferredCompletionQueue(Index);
+  end;
+ finally
+  fCompletionQueueLock.Release;
  end;
 end;
 
 procedure TPasRISCV.TNVMeDevice.CompleteCommand(const aCommand:PNVMeCommand;const aStatus:TPasRISCVUInt32;const aCommandSpecific:TPasRISCVUInt32=0);
-var Queue:PNVMeQueue;
-    QueueTail,CmdID{$ifndef NVMELevelTriggeredPCIEInterrupts},IRQVector,IRQMask{$endif}:TPasRISCVUInt32;
-    Address:TPasRISCVUInt64;
-    Ptr:PPasRISCVUInt8;
+var CmdID:TPasRISCVUInt32;
 begin
 
- Queue:=GetCompletionQueue(aCommand^.CompletionQueueID);
- if not assigned(Queue) then begin
-  exit;
- end;
-
- QueueTail:=TNVMeQueue.Enqueue(Queue^);
-
- // Toggle the completion-queue phase bit when we wrap back to slot 0.
- // In this implementation, QueueTail is the slot that is about to be written,
- // so reaching slot 0 means the new CQ cycle starts here and this CQE must be
- // published with the next phase value.
- //
- // QEMU updates the phase later, when it advances the tail past the last slot
- // and wraps the internal tail pointer back to 0. PasRISCV does it earlier,
- // right before writing slot 0. Both approaches are equivalent as long as the
- // queue never overruns: PasRISCV stores the phase of the CQE being written,
- // while QEMU stores the phase of the next insertion position.
- if QueueTail=0 then begin
-  Queue^.Phase:=Queue^.Phase xor 1;
- end;
-
- Address:=Queue^.GetAddress+(TPasRISCVUInt64(QueueTail) shl CQE_SIZE_SHIFT);
-
- Ptr:=GetGlobalDirectMemoryAccessPointer(Address,CQE_SIZE,true,nil);
- if assigned(Ptr) then begin
-  // Read CmdID from the SQE
-  CmdID:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_CID])^;
-  PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CS])^:=aCommandSpecific;
-  PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_RSVD])^:=0;
-  PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_SQHD_SQID])^:=aCommand^.SqHeadID;
-  TPasMPMemoryBarrier.Write;
-  PPasRISCVUInt32(@PPasRISCVUInt8Array(Ptr)[CQE_CID_PB_SF])^:=CmdID or (aStatus shl CQE_SF_SHIFT) or ((Queue^.Phase and 1) shl 16);
-  TPasMPMemoryBarrier.Write;
-{$ifdef NVMELevelTriggeredPCIEInterrupts}
-  Queue^.RaiseIRQ(self);
-{$ifdef PasRISCVDumpNVMeIO}
-  //writeln(StdErr,'NVMe IRQ raised at ',GetTickCount64,'ms');
-{$endif}
-{$else}
-  IRQVector:=Queue^.Data.IRQ shr 16;
-  IRQMask:=TPasRISCVUInt32(1) shl (IRQVector and $1f);
-  if (fIRQMask and IRQMask)=0 then begin
-   SendIRQ(0,IRQMask);
+ CmdID:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)[SQE_CID])^;
+ fCompletionQueueLock.Acquire;
+ try
+  EnqueueDeferredCompletion(aCommand^.CompletionQueueID,aCommand^.SqHeadID,CmdID,aStatus,aCommandSpecific);
+  if fSynchronousCompletionQueueProcessing then begin
+   DrainCompletionQueue(aCommand^.CompletionQueueID);
   end;
-{$endif}
+ finally
+  fCompletionQueueLock.Release;
+ end;
+
+ if not fSynchronousCompletionQueueProcessing then begin
+  ScheduleCompletionQueue(aCommand^.CompletionQueueID,false);
  end;
 
 end;
@@ -29464,7 +29824,7 @@ begin
   // Completion queue invalid or not yet created
   CompleteCommand(aCommand,SC_BAD_CQ);
  end else begin
-  SubmissionQueue^.Setup(self,Address,SubmissionQueueSize,CompletionQueueID);
+  SubmissionQueue^.Setup(self,Address,SubmissionQueueSize+1,CompletionQueueID);
   CompleteCommand(aCommand,SC_SUCCESS);
  end;
 end;
@@ -29489,8 +29849,14 @@ begin
   // Completion queue ID invalid or already in use
   CompleteCommand(aCommand,SC_BAD_QUEUE_ID);
  end else begin
-  Queue^.LowerIRQ(self);
-  Queue^.Setup(self,Address,CompletionQueueSize,CompletionQueueFlag);
+  fCompletionQueueLock.Acquire;
+  try
+   ResetDeferredCompletionQueue(CompletionQueueID);
+   Queue^.LowerIRQ(self);
+   Queue^.Setup(self,Address,CompletionQueueSize+1,CompletionQueueFlag);
+  finally
+   fCompletionQueueLock.Release;
+  end;
   CompleteCommand(aCommand,SC_SUCCESS);
  end;
 end;
@@ -29505,11 +29871,17 @@ begin
  end else begin
   Queue:=GetSubmissionQueue(QueueID);
  end;
- if (QueueID=0) or (not assigned(Queue)) then begin
+ if (QueueID=0) or not assigned(Queue) then begin
   CompleteCommand(aCommand,SC_BAD_QUEUE_ID);
  end else begin
   if aIsCompletionQueue then begin
-   Queue^.LowerIRQ(self);
+   fCompletionQueueLock.Acquire;
+   try
+    ResetDeferredCompletionQueue(QueueID);
+    Queue^.LowerIRQ(self);
+   finally
+    fCompletionQueueLock.Release;
+   end;
   end;
   Queue^.Setup(self,0,0,0);
   CompleteCommand(aCommand,SC_SUCCESS);
@@ -29844,15 +30216,20 @@ begin
    if assigned(Queue) then begin
     TPasMPMemoryBarrier.ReadDependency;
     QueueSize:=Queue^.Size;
-    if aValue<=QueueSize then begin
-     TPasMPMemoryBarrier.ReadWrite;
-     Queue^.Head:=aValue;
-{$ifdef NVMELevelTriggeredPCIEInterrupts}
-     TPasMPMemoryBarrier.ReadDependency;
-     if Queue^.Tail=aValue then begin
-      Queue^.LowerIRQ(self);
+    if aValue<QueueSize then begin
+     fCompletionQueueLock.Acquire;
+     try
+      TPasMPMemoryBarrier.ReadWrite;
+      Queue^.Head:=aValue;
+      if fSynchronousCompletionQueueProcessing then begin
+       DrainCompletionQueue(SubmissionQueueID);
+      end;
+     finally
+      fCompletionQueueLock.Release;
      end;
-{$endif}
+     if not fSynchronousCompletionQueueProcessing then begin
+      ScheduleCompletionQueue(SubmissionQueueID,false);
+     end;
     end;
    end;
   end;
@@ -29866,7 +30243,7 @@ begin
    if assigned(Queue) then begin
     TPasMPMemoryBarrier.ReadDependency;
     QueueSize:=Queue^.Size;
-    if aValue<=QueueSize then begin
+    if aValue<QueueSize then begin
      TPasMPMemoryBarrier.ReadWrite;
      Queue^.Tail:=aValue;
      TPasMPMemoryBarrier.ReadDependency;
@@ -29887,18 +30264,16 @@ end;
 
 procedure TPasRISCV.TNVMeDevice.CheckMaskedIRQs(const aMask:TPasRISCVUInt32);
 var Index:TPasRISCVSizeInt;
-    Queue:PNVMeQueue;
 begin
- for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
-  Queue:=@fCompletionQueues[Index];
-  if (aMask and (TPasRISCVUInt32(1) shl ((TPasMPInterlocked.Read(Queue^.Data.IRQ) shr 16) and $1f)))<>0 then begin
-   TPasMPMemoryBarrier.ReadDependency;
-   if Queue^.Head<>TPasMPInterlocked.Read(Queue^.Tail) then begin
-    Queue^.RaiseIRQ(self);
-   end else begin
-    Queue^.LowerIRQ(self);
+ fCompletionQueueLock.Acquire;
+ try
+  for Index:=QUEUE_ADMIN to NVME_IO_QUEUES do begin
+   if (aMask and (TPasRISCVUInt32(1) shl ((TPasMPInterlocked.Read(fCompletionQueues[Index].Data.IRQ) shr 16) and $1f)))<>0 then begin
+    UpdateCompletionQueueIRQ(Index);
    end;
   end;
+ finally
+  fCompletionQueueLock.Release;
  end;
 end;
 
@@ -29936,9 +30311,9 @@ begin
    end;
    NVME_REG_AQA:begin
     TPasMPMemoryBarrier.ReadDependency;
-    result:=fSubmissionQueues[QUEUE_ADMIN].Size;
+    result:=fSubmissionQueues[QUEUE_ADMIN].Size-1;
     TPasMPMemoryBarrier.ReadDependency;
-    result:=result or (fCompletionQueues[QUEUE_ADMIN].Size shl 16);
+    result:=result or ((fCompletionQueues[QUEUE_ADMIN].Size-1) shl 16);
    end;
    NVME_REG_ASQ1:begin
     TPasMPMemoryBarrier.ReadDependency;
@@ -29992,8 +30367,8 @@ begin
      end;
     end;
     NVME_REG_AQA:begin
-     TPasMPInterlocked.Write(fSubmissionQueues[QUEUE_ADMIN].Size,TPasRISCVUInt32(aValue and $fff));
-     TPasMPInterlocked.Write(fCompletionQueues[QUEUE_ADMIN].Size,TPasRISCVUInt32((aValue shr 16) and $fff));
+     TPasMPInterlocked.Write(fSubmissionQueues[QUEUE_ADMIN].Size,TPasRISCVUInt32(aValue and $fff)+1);
+     TPasMPInterlocked.Write(fCompletionQueues[QUEUE_ADMIN].Size,TPasRISCVUInt32((aValue shr 16) and $fff)+1);
     end;
     NVME_REG_ASQ1:begin
      TPasMPInterlocked.Write(fSubmissionQueues[QUEUE_ADMIN].AddressLow,TPasRISCVUInt32(aValue) and TPasRISCVUInt32($fffff000));
