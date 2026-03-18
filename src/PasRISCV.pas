@@ -29639,21 +29639,21 @@ begin
        fStreamLock.Release;
       end;
      end;
-     if Temporary<>Size then begin
-      CompleteCommand(aCommand,SC_DATA_ERR);
-{$ifdef PasRISCVDumpNVMeIO}
-      if Opcode=NVM_READ then begin
-       //writeln(StdErr,'NVMe READ end at ',GetTickCount64,'ms');
-      end else begin
-       //writeln(StdErr,'NVMe WRITE end at ',GetTickCount64,'ms');
-      end;
-{$endif}
-      exit;
-     end;
-     inc(Pos,Size);
     end else begin
-     break;
+     Temporary:=0;
     end;
+    if Temporary<>Size then begin
+     CompleteCommand(aCommand,SC_DATA_ERR);
+{$ifdef PasRISCVDumpNVMeIO}
+     if Opcode=NVM_READ then begin
+      //writeln(StdErr,'NVMe READ end at ',GetTickCount64,'ms');
+     end else begin
+      //writeln(StdErr,'NVMe WRITE end at ',GetTickCount64,'ms');
+     end;
+{$endif}
+     exit;
+    end;
+    inc(Pos,Size);
    end;
    CompleteCommand(aCommand,SC_SUCCESS);
 {$ifdef PasRISCVDumpNVMeIO}
