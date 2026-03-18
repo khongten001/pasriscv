@@ -329,6 +329,14 @@ unit PasRISCV;
  {-$define PasRISCVUseFutexEvents} // Use TPasMPFutexEvent instead of TPasMPConditionVariable+Lock
 {$endif}
 
+{$define PasRISCVPerHARTConditionVariables}
+
+{$define PasRISCVDumpNVMeIO}
+
+{$ifdef linux}
+ {$define PasRISCVFileMappedStreamMSync} // Use msync() instead of munmap+fsync+mmap in TPasRISCVFileMappedStream.Flush
+{$endif}
+
 {-$define NVMeSyncProcessing} // NVMe: process commands synchronously in doorbell handler (no job manager dispatch)
 
 {$define VirtIOReadAvailRingFlags} // VirtIO spec 2.7.7.1: read VIRTQ_AVAIL_F_NO_INTERRUPT from available ring instead of used ring
@@ -501,6 +509,7 @@ uses {$if defined(Posix) and not defined(fpc)}
       {$if defined(linux) or defined(android)}
        linux,
       {$ifend}
+      SysCall,
      {$elseif defined(Windows)}
       // Delphi and FreePascal: Win32, Win64
       Windows,
@@ -10596,6 +10605,17 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
               fSpinDetectStartTime:TPasRISCVUInt64;
               fSpinDetectTriggered:Boolean;
 {$endif}
+{$ifdef PasRISCVPerHARTConditionVariables}
+{$ifdef PasRISCVUseFutexEvents}
+              fWakeUpFutexEvent:TPasMPFutexEvent;
+{$else}
+              fWakeUpConditionVariableLock:TPasMPConditionVariableLock;
+              fWakeUpConditionVariable:TPasMPConditionVariable;
+{$endif}
+{$if defined(PasRISCVInterruptWakeupHardening)}
+              fWakeGeneration:TPasRISCVUInt64;
+{$ifend}
+{$ifend}
               procedure RestartExecution; inline;
               procedure UpdateMMU;
               function CheckPrivilege(const aCPUMode:THART.TMode;const aAccessType:TMMU.TAccessType):Boolean;
@@ -11577,6 +11597,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
        fINITRDOffset:TPasRISCVUInt64;
        fINITRDSize:TPasRISCVUInt64;
 
+{$ifndef PasRISCVPerHARTConditionVariables}
 {$ifdef PasRISCVUseFutexEvents}
        fWakeUpFutexEvent:TPasMPFutexEvent;
 {$else}
@@ -11585,6 +11606,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$endif}
 {$if defined(PasRISCVInterruptWakeupHardening)}
        fWakeGeneration:TPasRISCVUInt64;
+{$ifend}
 {$ifend}
 
        fEventThread:TEventThread;
@@ -18612,12 +18634,26 @@ begin
 end;
 
 function TPasRISCVFileMappedStream.Flush:Boolean;
+{$ifdef PasRISCVFileMappedStreamMSync}
+const MS_SYNC=4;
+{$ifndef cpux86_64}
+      syscall_nr_msync=227; // aarch64, riscv64 (generic Linux syscall table)
+{$endif}
+{$endif}
 begin
 {$ifdef unix}
+{$ifdef PasRISCVFileMappedStreamMSync}
+ if assigned(fMemory) then begin
+  result:=do_SysCall(syscall_nr_msync,TSysParam(fMemory),TSysParam(fCurrentViewSize),TSysParam(MS_SYNC))=0;
+ end else begin
+  result:=fpfsync(fFileHandle)=0;
+ end;
+{$else}
  // At freepascal is no fpmsync or msync, so we must do it over this workaround
  CloseMapView;
  result:=fpfsync(fFileHandle)=0;
  CreateMapView;
+{$endif}
 {$else}
  if assigned(fMemory) then begin
   FlushViewOfFile(fMemory,fCurrentViewSize);
@@ -26886,8 +26922,14 @@ begin
   HARTID:=aContext shr 1;
   if HARTID<length(fMachine.fHARTs) then begin
    if (aContext and 1)<>0 then begin
+{$ifdef PasRISCVDumpNVMeIO}
+    //writeln(StdErr,'PLIC NotifyContextIRQ IRQ=',aIRQ,' ctx=',aContext,' HART=',HARTID,' S-ext at ',GetTickCount64,'ms');
+{$endif}
     fMachine.fHARTs[HARTID].RaiseInterrupt(TPasRISCV.THART.TInterruptValue.SupervisorExternal);
    end else begin
+{$ifdef PasRISCVDumpNVMeIO}
+    //writeln(StdErr,'PLIC NotifyContextIRQ IRQ=',aIRQ,' ctx=',aContext,' HART=',HARTID,' M-ext at ',GetTickCount64,'ms');
+{$endif}
     fMachine.fHARTs[HARTID].RaiseInterrupt(TPasRISCV.THART.TInterruptValue.MachineExternal);
    end;
   end;
@@ -27187,12 +27229,18 @@ begin
  repeat
   Old:=TPasMPInterlocked.Read(fIRQStates[WordIndex]);
   if (Old and AssertedMask)=0 then begin
+{$ifdef PasRISCVDumpNVMeIO}
+   //writeln(StdErr,'PLIC CompleteIRQ IRQ=',aIRQ,' ctx=',aContext,' asserted=0 at ',GetTickCount64,'ms (no re-pend)');
+{$endif}
    break;
   end;
   New:=Old or PendingMask;
  until TPasMPInterlocked.CompareExchange(fIRQStates[WordIndex],New,Old)=Old;
  if ((Old and AssertedMask)<>0) and ((Old and PendingMask)=0) then begin
   TPasMPInterlocked.BitwiseOr(fPending[aIRQ shr 5],TPasRISCVUInt32(1) shl (aIRQ and 31));
+{$ifdef PasRISCVDumpNVMeIO}
+  //writeln(StdErr,'PLIC CompleteIRQ IRQ=',aIRQ,' ctx=',aContext,' re-pend+notify at ',GetTickCount64,'ms');
+{$endif}
   NotifyContextIRQ(aContext,aIRQ);
  end;
 {$else}
@@ -27302,6 +27350,10 @@ begin
   if ((Old and PendingMask)=0) and ((New and PendingMask)<>0) then begin
    TPasMPInterlocked.BitwiseOr(fPending[aIRQ shr 5],Mask);
    NotifyIRQ(aIRQ);
+{$ifdef PasRISCVDumpNVMeIO}
+  end else begin
+   //writeln(StdErr,'PLIC RaiseIRQ dedup skip IRQ=',aIRQ,' at ',GetTickCount64,'ms (pending was already set)');
+{$endif}
   end;
 {$else}
   // Default (original): chained dedup on fRaised then fPending.
@@ -29116,6 +29168,9 @@ begin
   TPasMPMemoryBarrier.Write;
 {$ifdef NVMELevelTriggeredPCIEInterrupts}
   Queue^.RaiseIRQ(self);
+{$ifdef PasRISCVDumpNVMeIO}
+  //writeln(StdErr,'NVMe IRQ raised at ',GetTickCount64,'ms');
+{$endif}
 {$else}
   IRQVector:=Queue^.Data.IRQ shr 16;
   IRQMask:=TPasRISCVUInt32(1) shl (IRQVector and $1f);
@@ -29545,12 +29600,26 @@ begin
  Pos:=PPasRISCVUInt64(@PPasRISCVUInt8Array(aCommand^.Ptr)^[SQE_CDW10])^ shl NVME_LBA_SHIFT;
  case Opcode of
   NVM_READ,NVM_WRITE:begin
+{$ifdef PasRISCVDumpNVMeIO}
+   if Opcode=NVM_READ then begin
+    //writeln(StdErr,'NVMe READ begin at ',GetTickCount64,'ms');
+   end else begin
+    //writeln(StdErr,'NVMe WRITE begin at ',GetTickCount64,'ms');
+   end;
+{$endif}
    NLB:=PPasRISCVUInt16(@PPasRISCVUInt8Array(aCommand^.Ptr)^[SQE_CDW12])^;
    PreparePRP(aCommand,(TPasRISCVUInt64(NLB)+1) shl NVME_LBA_SHIFT);
    while PRPAvail(aCommand)>0 do begin
     Size:=0;
     Buffer:=GetPRPRegion(aCommand,Size,Opcode=NVM_READ);
     if assigned(Buffer) then begin
+{$ifdef PasRISCVDumpNVMeIO}
+     if Opcode=NVM_READ then begin
+      //writeln(StdErr,'NVMe READ block at ',GetTickCount64,'ms with ',Size,' bytes at position ',Pos);
+     end else begin
+      //writeln(StdErr,'NVMe WRITE block at ',GetTickCount64,'ms with ',Size,' bytes at position ',Pos);
+     end;
+{$endif}
      if (fStream is TPasRISCVRandomAccessStream) and TPasRISCVRandomAccessStream(fStream).CanRandomAccess then begin
       if Opcode=NVM_WRITE then begin
        Temporary:=TPasRISCVRandomAccessStream(fStream).RandomAccessWrite(Pos,Buffer^,Size);
@@ -29572,22 +29641,51 @@ begin
      end;
      if Temporary<>Size then begin
       CompleteCommand(aCommand,SC_DATA_ERR);
+{$ifdef PasRISCVDumpNVMeIO}
+      if Opcode=NVM_READ then begin
+       //writeln(StdErr,'NVMe READ end at ',GetTickCount64,'ms');
+      end else begin
+       //writeln(StdErr,'NVMe WRITE end at ',GetTickCount64,'ms');
+      end;
+{$endif}
       exit;
      end;
      inc(Pos,Size);
     end else begin
-     exit;
+     break;
     end;
    end;
    CompleteCommand(aCommand,SC_SUCCESS);
+{$ifdef PasRISCVDumpNVMeIO}
+   if Opcode=NVM_READ then begin
+    //writeln(StdErr,'NVMe READ end at ',GetTickCount64,'ms');
+   end else begin
+    //writeln(StdErr,'NVMe WRITE end at ',GetTickCount64,'ms');
+   end;
+{$endif}
   end;
   NVM_FLUSH:begin
+{$ifdef PasRISCVDumpNVMeIO}
+   //writeln(StdErr,'NVMe FLUSH begin at ',GetTickCount64,'ms');
+{$endif}
    fStreamLock.Acquire;
    try
     if FlushStream(fStream) then begin
+{$ifdef PasRISCVDumpNVMeIO}
+     //writeln(StdErr,'NVMe FLUSH synced at ',GetTickCount64,'ms');
+{$endif}
      CompleteCommand(aCommand,SC_SUCCESS);
+{$ifdef PasRISCVDumpNVMeIO}
+     //writeln(StdErr,'NVMe FLUSH completed at ',GetTickCount64,'ms');
+{$endif}
     end else begin
+{$ifdef PasRISCVDumpNVMeIO}
+     //writeln(StdErr,'NVMe FLUSH sync-err at ',GetTickCount64,'ms');
+{$endif}
      CompleteCommand(aCommand,SC_DATA_ERR);
+{$ifdef PasRISCVDumpNVMeIO}
+     //writeln(StdErr,'NVMe FLUSH completed at ',GetTickCount64,'ms');
+{$endif}
     end;
    finally
     fStreamLock.Release;
@@ -29728,6 +29826,9 @@ begin
 
  if (aQueueID and 1)<>0 then begin
   // Completion Queue doorbell
+{$ifdef PasRISCVDumpNVMeIO}
+  //writeln(StdErr,'NVMe CQ doorbell at ',GetTickCount64,'ms');
+{$endif}
   if SubmissionQueueID<=NVME_IO_QUEUES then begin
    Queue:=GetCompletionQueue(SubmissionQueueID);
    if assigned(Queue) then begin
@@ -29747,6 +29848,9 @@ begin
   end;
  end else begin
   // Submission Queue doorbell
+{$ifdef PasRISCVDumpNVMeIO}
+  //writeln(StdErr,'NVMe SQ doorbell at ',GetTickCount64,'ms');
+{$endif}
   if SubmissionQueueID<=NVME_IO_QUEUES then begin
    Queue:=GetSubmissionQueue(SubmissionQueueID);
    if assigned(Queue) then begin
@@ -69051,6 +69155,20 @@ begin
  fSpinDetectTriggered:=false;
 {$endif}
 
+{$ifdef PasRISCVPerHARTConditionVariables}
+{$ifdef PasRISCVUseFutexEvents}
+ fWakeUpFutexEvent:=TPasMPFutexEvent.Create;
+{$else}
+ fWakeUpConditionVariableLock:=TPasMPConditionVariableLock.Create;
+
+ fWakeUpConditionVariable:=TPasMPConditionVariable.Create;
+{$endif}
+
+{$if defined(PasRISCVInterruptWakeupHardening)}
+ fWakeGeneration:=0;
+{$ifend}
+{$endif}
+
  for CSRIndex:=Low(TCSRHandlerMap) to High(TCSRHandlerMap) do begin
 
   case CSRIndex of
@@ -69412,6 +69530,14 @@ begin
  end;
 {$ifdef PasRISCVAddressSpaceDispatch}
  fAddressSpaceDispatch.Finalize;
+{$endif}
+{$ifdef PasRISCVPerHARTConditionVariables}
+{$ifdef PasRISCVUseFutexEvents}
+ FreeAndNil(fWakeUpFutexEvent);
+{$else}
+ FreeAndNil(fWakeUpConditionVariableLock);
+ FreeAndNil(fWakeUpConditionVariable);
+{$endif}
 {$endif}
  inherited Destroy;
 end;
@@ -97891,6 +98017,33 @@ var Mask:TPasRISCVUInt64;
 begin
  Mask:=TPasRISCVUInt64(1) shl TPasRISCVUInt64(aInterruptValue);
  if (TPasMPInterlocked.ExchangeBitwiseOr(fState.PendingIRQs,Mask) and Mask)=0 then begin
+{$ifdef PasRISCVDumpNVMeIO}
+  if aInterruptValue=TPasRISCV.THART.TInterruptValue.SupervisorExternal then begin
+   //writeln(StdErr,'HART ',fHARTID,' RaiseInterrupt S-ext (new) at ',GetTickCount64,'ms');
+  end;
+{$endif}
+{$ifdef PasRISCVPerHARTConditionVariables}
+{$ifdef PasRISCVUseFutexEvents}
+{$if defined(PasRISCVInterruptWakeupHardening)}
+//TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
+{$ifend}
+//RestartExecution;
+  TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fHARTMask);
+  fWakeUpFutexEvent.Wake;
+{$else}
+  fWakeUpConditionVariableLock.Acquire;
+  try
+{$if defined(PasRISCVInterruptWakeupHardening)}
+// TPasMPInterlocked.Increment(fWakeGeneration);
+{$ifend}
+// RestartExecution;
+   TPasMPInterlocked.BitwiseOr(fMachine.fRunState,fHARTMask);
+   fWakeUpConditionVariable.Signal;
+  finally
+   fWakeUpConditionVariableLock.Release;
+  end;
+{$endif}
+{$else}
 {$ifdef PasRISCVUseFutexEvents}
 {$if defined(PasRISCVInterruptWakeupHardening)}
 //TPasMPInterlocked.Increment(fMachine.fWakeGeneration);
@@ -97911,6 +98064,13 @@ begin
    fMachine.fWakeUpConditionVariable.Broadcast;
   finally
    fMachine.fWakeUpConditionVariableLock.Release;
+  end;
+{$endif}
+{$endif}
+ end else begin
+{$ifdef PasRISCVDumpNVMeIO}
+  if aInterruptValue=TPasRISCV.THART.TInterruptValue.SupervisorExternal then begin
+   //writeln(StdErr,'HART ',fHARTID,' RaiseInterrupt S-ext DEDUP (already pending) at ',GetTickCount64,'ms');
   end;
 {$endif}
  end;
@@ -98656,12 +98816,12 @@ begin
       WaitForDuration:=ConvertScale(Remaining-SleepThreshold,CLOCK_FREQUENCY,1000);
       if WaitForDuration>0 then begin
 {$if defined(PasRISCVInterruptWakeupHardening)}
-       WakeGeneration:=TPasMPInterlocked.Read(fMachine.fWakeGeneration);
+       WakeGeneration:=TPasMPInterlocked.Read({$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeGeneration);
 {$ifend}
-       fMachine.fWakeUpFutexEvent.Wait(WaitForDuration*1000000);
-       fMachine.fWakeUpFutexEvent.Reset;
+       {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpFutexEvent.Wait(WaitForDuration*1000000);
+       {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpFutexEvent.Reset;
 {$if defined(PasRISCVInterruptWakeupHardening)}
-       if TPasMPInterlocked.Read(fMachine.fWakeGeneration)<>WakeGeneration then begin
+       if TPasMPInterlocked.Read({$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeGeneration)<>WakeGeneration then begin
         Remaining:=0;
         break;
        end;
@@ -98677,17 +98837,17 @@ begin
       TimeA:=TimeB;
      end;
 {$else}
-     fMachine.fWakeUpConditionVariableLock.Acquire;
+     {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariableLock.Acquire;
      try
       while (Remaining>SleepThreshold) and ((TPasMPInterlocked.Read(fMachine.fRunState) and (fHARTMask or TPasRISCVUInt32(RUNSTATE_GLOBAL_MASK)))=RUNSTATE_RUNNING) do begin
        WaitForDuration:=ConvertScale(Remaining-SleepThreshold,CLOCK_FREQUENCY,1000);
        if WaitForDuration>0 then begin
 {$if defined(PasRISCVInterruptWakeupHardening)}
-        WakeGeneration:=TPasMPInterlocked.Read(fMachine.fWakeGeneration);
+        WakeGeneration:=TPasMPInterlocked.Read({$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeGeneration);
 {$ifend}
-        fMachine.fWakeUpConditionVariable.Wait(fMachine.fWakeUpConditionVariableLock,WaitForDuration);
+        {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariable.Wait({$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariableLock,WaitForDuration);
 {$if defined(PasRISCVInterruptWakeupHardening)}
-        if TPasMPInterlocked.Read(fMachine.fWakeGeneration)<>WakeGeneration then begin
+        if TPasMPInterlocked.Read({$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeGeneration)<>WakeGeneration then begin
          Remaining:=0;
          break;
         end;
@@ -98703,7 +98863,7 @@ begin
        TimeA:=TimeB;
       end;
      finally
-      fMachine.fWakeUpConditionVariableLock.Release;
+      {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariableLock.Release;
      end;
 {$endif}
 
@@ -98763,14 +98923,14 @@ end;
 procedure TPasRISCV.THART.SleepPause;
 begin
 {$ifdef PasRISCVUseFutexEvents}
- fMachine.fWakeUpFutexEvent.Wait(10000000);
- fMachine.fWakeUpFutexEvent.Reset;
+ {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpFutexEvent.Wait(10000000);
+ {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpFutexEvent.Reset;
 {$else}
- fMachine.fWakeUpConditionVariableLock.Acquire;
+ {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariableLock.Acquire;
  try
-  fMachine.fWakeUpConditionVariable.Wait(fMachine.fWakeUpConditionVariableLock,10);
+  {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariable.Wait({$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariableLock,10);
  finally
-  fMachine.fWakeUpConditionVariableLock.Release;
+  {$ifndef PasRISCVPerHARTConditionVariables}fMachine.{$endif}fWakeUpConditionVariableLock.Release;
  end;
 {$endif}
 end;
@@ -103566,6 +103726,7 @@ begin
 
  fOnCPUException:=nil;
 
+{$ifndef PasRISCVPerHARTConditionVariables}
 {$ifdef PasRISCVUseFutexEvents}
  fWakeUpFutexEvent:=TPasMPFutexEvent.Create;
 {$else}
@@ -103577,6 +103738,7 @@ begin
 {$if defined(PasRISCVInterruptWakeupHardening)}
  fWakeGeneration:=0;
 {$ifend}
+{$endif}
 
  fGlobalLock:=TPasMPMultipleReaderSingleWriterSpinLock.Create;
 
@@ -104069,11 +104231,13 @@ begin
  FreeAndNil(fHARTStatusChangeConditionVariableLock);
 {$endif}
 
+{$ifndef PasRISCVPerHARTConditionVariables}
 {$ifdef PasRISCVUseFutexEvents}
  FreeAndNil(fWakeUpFutexEvent);
 {$else}
  FreeAndNil(fWakeUpConditionVariable);
  FreeAndNil(fWakeUpConditionVariableLock);
+{$endif}
 {$endif}
 
  inherited Destroy;
@@ -106069,6 +106233,11 @@ begin
     end;
 {$endif}
 
+{$ifdef PasRISCVPerHARTConditionVariables}
+    while (fRunState and (RUNSTATE_RUNNING or RUNSTATE_PAUSED or RUNSTATE_POWEROFF))=(RUNSTATE_RUNNING or RUNSTATE_PAUSED) do begin
+     Sleep(10);
+    end;
+{$else}
 {$ifdef PasRISCVUseFutexEvents}
     while (fRunState and (RUNSTATE_RUNNING or RUNSTATE_PAUSED or RUNSTATE_POWEROFF))=(RUNSTATE_RUNNING or RUNSTATE_PAUSED) do begin
      fWakeUpFutexEvent.Wait(100000000);
@@ -106083,6 +106252,7 @@ begin
     finally
      fWakeUpConditionVariableLock.Release;
     end;
+{$endif}
 {$endif}
 
 {$ifdef PasRISCVStepDebugOutput}
@@ -106266,16 +106436,58 @@ begin
 end;
 
 procedure TPasRISCV.WakeUp;
+{$ifdef PasRISCVPerHARTConditionVariables}
+var HARTIndex:TPasRISCVSizeInt;
+    HART:THART;
+{$endif}
 begin
+{$ifdef PasRISCVPerHARTConditionVariables}
+ for HARTIndex:=0 to length(fHARTs)-1 do begin
+  HART:=fHARTs[HARTIndex];
+{$ifdef PasRISCVUseFutexEvents}
+  HART.fWakeUpFutexEvent.Wake;
+{$else}
+  HART.fWakeUpConditionVariable.Signal;
+{$endif}
+ end;
+{$else}
 {$ifdef PasRISCVUseFutexEvents}
  fWakeUpFutexEvent.WakeAll;
 {$else}
  fWakeUpConditionVariable.Broadcast;
 {$endif}
+{$endif}
 end;
 
 procedure TPasRISCV.InterruptAndWakeUp;
+{$ifdef PasRISCVPerHARTConditionVariables}
+var HARTIndex:TPasRISCVSizeInt;
+    HART:THART;
+{$endif}
 begin
+{$ifdef PasRISCVPerHARTConditionVariables}
+ for HARTIndex:=0 to length(fHARTs)-1 do begin
+  HART:=fHARTs[HARTIndex];
+{$ifdef PasRISCVUseFutexEvents}
+{$if defined(PasRISCVInterruptWakeupHardening)}
+  TPasMPInterlocked.Increment(HART.fWakeGeneration);
+{$ifend}
+  TPasMPInterlocked.BitwiseOr(fRunState,HART.fHARTMask);
+  HART.fWakeUpFutexEvent.Wake;
+{$else}
+  HART.fWakeUpConditionVariableLock.Acquire;
+  try
+ {$if defined(PasRISCVInterruptWakeupHardening)}
+   TPasMPInterlocked.Increment(HART.fWakeGeneration);
+ {$ifend}
+   TPasMPInterlocked.BitwiseOr(fRunState,HART.fHARTMask);
+   HART.fWakeUpConditionVariable.Signal;
+  finally
+   HART.fWakeUpConditionVariableLock.Release;
+  end;
+{$endif}
+ end;
+{$else}
 {$ifdef PasRISCVUseFutexEvents}
 {$if defined(PasRISCVInterruptWakeupHardening)}
  TPasMPInterlocked.Increment(fWakeGeneration);
@@ -106293,6 +106505,7 @@ begin
  finally
   fWakeUpConditionVariableLock.Release;
  end;
+{$endif}
 {$endif}
 end;
 
