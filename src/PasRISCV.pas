@@ -318,7 +318,7 @@ unit PasRISCV;
 {$define PasRISCVPLICOptimizedAtomicIRQState} // Packed 4-bit-per-IRQ atomic state in uint64 words
 
 // Wakeup hardening (orthogonal, can combine with any above):
-{-$define PasRISCVInterruptWakeupHardening}        // Wake-generation counter + InterruptAndWakeUp consolidation
+{$define PasRISCVInterruptWakeupHardening}        // Wake-generation counter + InterruptAndWakeUp consolidation
 
 // Safety net disable (only use with a race-free approach above, not with the default original):
 {-$define PasRISCVInterruptNoSafetyNet}           // Disable 100Hz FullUpdate safety net in EventTick
@@ -22417,7 +22417,11 @@ begin
       fOnWritePacket(@fBuffer,Len);
      end;
     end;
+   end else begin
+    Sleep(1);
    end;
+  end else begin
+   Sleep(1);
   end;
  end;
 end;
