@@ -29504,15 +29504,9 @@ begin
   fCompletionQueueLock.Acquire;
   try
    TPasMPInterlocked.Write(QueueState^.Scheduled,0);
-   if fSynchronousCompletionQueueProcessing then begin
-    repeat
-     DrainCompletionQueue(aQueueID);
-    until not CompletionQueueHasDeferredCompletions(aQueueID);
-   end else begin
-    DrainCompletionQueue(aQueueID);
-    if CompletionQueueHasDeferredCompletions(aQueueID) then begin
-     Reschedule:=true;
-    end;
+   DrainCompletionQueue(aQueueID);
+   if (not fSynchronousCompletionQueueProcessing) and CompletionQueueHasDeferredCompletions(aQueueID) then begin
+    Reschedule:=true;
    end;
   finally
    fCompletionQueueLock.Release;
