@@ -72671,12 +72671,57 @@ begin
 end;
 
 function TPasRISCV.THART.Load(const aAddress:TPasRISCVUInt64;const aSize:TPasRISCVUInt64):TPasRISCVUInt64;
-var TranslatedAddress,PartSize:TPasRISCVUInt64;
+var VPN,TranslatedAddress,PartSize:TPasRISCVUInt64;
+    DirectAccessTLBEntry:TMMU.PDirectAccessTLBEntry;
 begin
  if ((aAddress and PAGE_MASK)+aSize)<=PAGE_SIZE then begin
+  VPN:=aAddress shr PAGE_SHIFT;
+  DirectAccessTLBEntry:={$ifdef PerModeTLB}@fDirectAccessTLBCache^{$else}@fDirectAccessTLBCache{$endif}[VPN and TMMU.DIRECT_ACCESS_TLB_MASK];
+  if DirectAccessTLBEntry^.Read=VPN then begin
+   case aSize of
+    1:begin
+     result:=PPasRISCVUInt8(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    2:begin
+     result:=PPasRISCVUInt16(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    4:begin
+     result:=PPasRISCVUInt32(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    8:begin
+     result:=PPasRISCVUInt64(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    else begin
+     result:=0;
+     Move(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress))^,result,aSize);
+    end;
+   end;
+   exit;
+  end;
   TranslatedAddress:=AddressTranslate(aAddress,TMMU.TAccessType.Load,[]);
   if fState.ExceptionValue<>TExceptionValue.None then begin
    result:=0;
+{$ifdef PreferDirectMemoryAccess}
+  end else if DirectAccessTLBEntry^.Read=VPN then begin
+   case aSize of
+    1:begin
+     result:=PPasRISCVUInt8(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    2:begin
+     result:=PPasRISCVUInt16(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    4:begin
+     result:=PPasRISCVUInt32(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    8:begin
+     result:=PPasRISCVUInt64(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress)))^;
+    end;
+    else begin
+     result:=0;
+     Move(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryRead{$endif}+aAddress))^,result,aSize);
+    end;
+   end;
+{$endif}
   end else begin
    case aSize of
     3:begin
@@ -72721,43 +72766,90 @@ begin
 end;
 
 procedure TPasRISCV.THART.Store(const aAddress:TPasRISCVUInt64;const aValue:TPasRISCVUInt64;const aSize:TPasRISCVUInt64);
-var TranslatedAddress,PartSize:TPasRISCVUInt64;
+var VPN,TranslatedAddress,PartSize:TPasRISCVUInt64;
+    DirectAccessTLBEntry:TMMU.PDirectAccessTLBEntry;
 begin
  if ((aAddress and PAGE_MASK)+aSize)<=PAGE_SIZE then begin
-  TranslatedAddress:=AddressTranslate(aAddress,TMMU.TAccessType.Store,[]);
-  if fState.ExceptionValue=TExceptionValue.None then begin
+  VPN:=aAddress shr PAGE_SHIFT;
+  DirectAccessTLBEntry:={$ifdef PerModeTLB}@fDirectAccessTLBCache^{$else}@fDirectAccessTLBCache{$endif}[VPN and TMMU.DIRECT_ACCESS_TLB_MASK];
+  if DirectAccessTLBEntry^.Write=VPN then begin
    case aSize of
-    3:begin
-     fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffff),2);
-     if fState.ExceptionValue=TExceptionValue.None then begin
-      fBus.Store(self,TranslatedAddress+2,(aValue shr 16) and TPasRISCVUInt64($ff),1);
-     end;
+    1:begin
+     PPasRISCVUInt8(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt8(aValue);
     end;
-    5:begin
-     fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffffffff),4);
-     if fState.ExceptionValue=TExceptionValue.None then begin
-      fBus.Store(self,TranslatedAddress+4,(aValue shr 32) and TPasRISCVUInt64($ff),1);
-     end;
+    2:begin
+     PPasRISCVUInt16(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt16(aValue);
     end;
-    6:begin
-     fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffffffff),4);
-     if fState.ExceptionValue=TExceptionValue.None then begin
-      fBus.Store(self,TranslatedAddress+4,(aValue shr 32) and TPasRISCVUInt64($ffff),2);
-     end;
+    4:begin
+     PPasRISCVUInt32(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt32(aValue);
     end;
-    7:begin
-     fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffffffff),4);
-     if fState.ExceptionValue=TExceptionValue.None then begin
-      fBus.Store(self,TranslatedAddress+4,(aValue shr 32) and TPasRISCVUInt64($ffff),2);
-      if fState.ExceptionValue=TExceptionValue.None then begin
-       fBus.Store(self,TranslatedAddress+6,(aValue shr 48) and TPasRISCVUInt64($ff),1);
-      end;
-     end;
+    8:begin
+     PPasRISCVUInt64(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt64(aValue);
     end;
     else begin
-     fBus.Store(self,TranslatedAddress,aValue,aSize);
+     Move(aValue,Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress))^,aSize);
     end;
    end;
+   exit;
+  end;
+  TranslatedAddress:=AddressTranslate(aAddress,TMMU.TAccessType.Store,[]);
+  if fState.ExceptionValue=TExceptionValue.None then begin
+{$ifdef PreferDirectMemoryAccess}
+   if DirectAccessTLBEntry^.Write=VPN then begin
+    case aSize of
+     1:begin
+      PPasRISCVUInt8(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt8(aValue);
+     end;
+     2:begin
+      PPasRISCVUInt16(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt16(aValue);
+     end;
+     4:begin
+      PPasRISCVUInt32(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt32(aValue);
+     end;
+     8:begin
+      PPasRISCVUInt64(Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress)))^:=TPasRISCVUInt64(aValue);
+     end;
+     else begin
+      Move(aValue,Pointer(TPasRISCVPtrUInt({$ifdef CombinedDirectAccessTLBCache}DirectAccessTLBEntry^.RelativeMemory{$else}DirectAccessTLBEntry^.RelativeMemoryWrite{$endif}+aAddress))^,aSize);
+     end;
+    end;
+   end else begin
+{$endif}
+    case aSize of
+     3:begin
+      fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffff),2);
+      if fState.ExceptionValue=TExceptionValue.None then begin
+       fBus.Store(self,TranslatedAddress+2,(aValue shr 16) and TPasRISCVUInt64($ff),1);
+      end;
+     end;
+     5:begin
+      fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffffffff),4);
+      if fState.ExceptionValue=TExceptionValue.None then begin
+       fBus.Store(self,TranslatedAddress+4,(aValue shr 32) and TPasRISCVUInt64($ff),1);
+      end;
+     end;
+     6:begin
+      fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffffffff),4);
+      if fState.ExceptionValue=TExceptionValue.None then begin
+       fBus.Store(self,TranslatedAddress+4,(aValue shr 32) and TPasRISCVUInt64($ffff),2);
+      end;
+     end;
+     7:begin
+      fBus.Store(self,TranslatedAddress,(aValue shr 0) and TPasRISCVUInt64($ffffffff),4);
+      if fState.ExceptionValue=TExceptionValue.None then begin
+       fBus.Store(self,TranslatedAddress+4,(aValue shr 32) and TPasRISCVUInt64($ffff),2);
+       if fState.ExceptionValue=TExceptionValue.None then begin
+        fBus.Store(self,TranslatedAddress+6,(aValue shr 48) and TPasRISCVUInt64($ff),1);
+       end;
+      end;
+     end;
+     else begin
+      fBus.Store(self,TranslatedAddress,aValue,aSize);
+     end;
+    end;
+{$ifdef PreferDirectMemoryAccess}
+   end;
+{$endif}
   end;
  end else begin
   PartSize:=PAGE_SIZE-(aAddress and PAGE_MASK);
