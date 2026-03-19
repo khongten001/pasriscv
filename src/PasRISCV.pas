@@ -70126,7 +70126,11 @@ begin
  end;
 
 {$ifdef PasRISCVMMIOTLB}
+{$ifdef PerModeTLB}
  FillChar(fMMIOTLBDataModes,SizeOf(TMMU.TMMIOTLBDataModes),#0);
+{$else}
+ FillChar(fMMIOTLBData,SizeOf(TMMU.TMMIOTLBEntries),#0);
+{$endif}
 {$endif}
 
 end;
