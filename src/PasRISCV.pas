@@ -70343,7 +70343,7 @@ begin
    PageTableOffset:=((aGuestPhysical shr BitOffset) and TMMU.VPN_MASK) shl 3;
   end;
 
-  PageTableEntryPointer:=fBus.GetDirectMemoryAccessPointer(self,PageTable+PageTableOffset,SizeOf(TPasRISCVUInt64),true,nil);
+  PageTableEntryPointer:=fBus.GetDirectMemoryAccessPointer(self,PageTable+PageTableOffset,SizeOf(TPasRISCVUInt64),false,nil);
   if not assigned(PageTableEntryPointer) then begin
    RaiseGuestPageFault(aGuestPhysical,aAccessType);
    result:=0;
@@ -70730,13 +70730,13 @@ end;
 procedure TPasRISCV.THART.TLBPutBusDevice(const aVirtualAddress,aPhysicalAddress:TPasRISCVUInt64;const aAccessType:TMMU.TAccessType);
 var Target:Pointer;
 begin
-{$ifdef PasRISCVJustInTimeCompiler}
- if aAccessType=TMMU.TAccessType.Store then begin
-  fMachine.JITMarkDirtyMemory(aPhysicalAddress);
- end;
-{$endif}
- Target:=fBus.GetDirectMemoryAccessPointer(self,aPhysicalAddress and PAGE_ADDRESS_MASK,PAGE_SIZE,TMMU.AccessWrite[aAccessType],nil);
+ Target:=fBus.GetDirectMemoryAccessPointer(self,aPhysicalAddress and PAGE_ADDRESS_MASK,PAGE_SIZE,false{TMMU.AccessWrite[aAccessType]},nil);
  if assigned(Target) then begin
+{$ifdef PasRISCVJustInTimeCompiler}
+  if aAccessType=TMMU.TAccessType.Store then begin
+   fMachine.JITMarkDirtyMemory(aPhysicalAddress and PAGE_ADDRESS_MASK);
+  end;
+{$endif}
   TLBPut(aVirtualAddress and PAGE_ADDRESS_MASK,TPasRISCVPtrUInt(Target),aAccessType);
 {$ifdef PasRISCVMMIOTLB}
  end else begin
@@ -70934,7 +70934,7 @@ begin
      end;
     end;
 
-    PageTableEntryPointer:=fBus.GetDirectMemoryAccessPointer(self,PTEFetchAddress,SizeOf(TPasRISCVUInt64),true,nil);
+    PageTableEntryPointer:=fBus.GetDirectMemoryAccessPointer(self,PTEFetchAddress,SizeOf(TPasRISCVUInt64),false,nil);
     if not assigned(PageTableEntryPointer) then begin
      // Physical fault
      if not (TMMU.TAccessFlag.NoTrap in aAccessFlags) then begin
