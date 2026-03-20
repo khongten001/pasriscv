@@ -464,6 +464,8 @@ unit PasRISCV;
  {$ifend}
 {$endif}
 
+
+
 interface
 
 uses {$if defined(Posix) and not defined(fpc)}
@@ -1956,7 +1958,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
              PAGE_MASK=4095;
              PAGE_SHIFT=12;
              PAGE_ADDRESS_MASK=TPasRISCVUInt64($fffffffffffff000);
-             VLEN={$ifdef VLEN128}128{$else}256{$endif};
+             VLEN=256;
              VLENB=VLEN div 8;
              RUNSTATE_POWEROFF=TPasRISCVUInt32(1) shl 16;
              RUNSTATE_RUNNING=TPasRISCVUInt32(1) shl 17;
@@ -8753,6 +8755,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
                           TFPURegisterInfos=array[TFPURegister] of TRegisterInfo;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+                          TVectorRegisterInfos=array[0..31] of TRegisterInfo;
+{$endif}
                           TBlockCallback=procedure(const aStatePointer:Pointer); register;
                           TIntrinsicMethod=function(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean of object;
                           TJITTLBEntry=packed record
@@ -8797,7 +8802,6 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                            PatchPtr:TPasRISCVPtrUInt;
                           end;
                     private
-                     // Integer register allocator state
                      fHostIntRegisterMask:TPasRISCVUInt32;
                      fHostIntRegisterInfos:TIntRegisterInfos;
                      fABIReclaimMask:TPasRISCVUInt32;
@@ -8807,6 +8811,11 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      // FPU register allocator state
                      fHostFPURegisterMask:TPasRISCVUInt32;
                      fHostFPURegisterInfos:TFPURegisterInfos;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+                     // Vector register allocator state
+                     fHostVectorRegisterMask:TPasRISCVUInt32;
+                     fHostVectorRegisterInfos:TVectorRegisterInfos;
 {$endif}
                      // Block cache
                      fJITTLB:TJITTLBEntries;
@@ -8848,6 +8857,8 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      fBlockVLChecked:Boolean;
                      fBlockVTypeChecked:Boolean;
                      fBlockVSDirtyEmitted:Boolean;
+                     fJITVLEN:TPasRISCVUInt32;
+                     fJITVLENB:TPasRISCVUInt32;
 {$endif}
 {$ifdef PasRISCVJustInTimeCompilerCBO}
                      fBlockCBOInvalChecked:Boolean;
@@ -8972,6 +8983,18 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVector}
+                     // Vector register allocator
+                     function MapGuestToHostVectorRegister(const aGuestVReg:TPasRISCVUInt32;const aFlags:TPasRISCVUInt8):TPasRISCVUInt8;
+                     function ClaimHostVectorRegister(const aAvoidRegisterMask:TPasRISCVUInt32=0):TPasRISCVUInt8;
+                     procedure FreeHostVectorRegister(const aHostRegister:TPasRISCVUInt8); inline;
+                     procedure FreeGuestVectorRegister(const aGuestVReg:TPasRISCVUInt32);
+                     procedure SaveAllDirtyVectorRegisters;
+                     procedure ReloadAllMappedVectorRegisters;
+                     procedure FreeAllHostVectorRegisters;
+                     procedure EvictVectorForFPU(const aHostRegisterMask:TPasRISCVUInt32);
+                     procedure EvictFPUForVector(const aHostRegisterMask:TPasRISCVUInt32);
+                     function DefaultVectorRegisterMask:TPasRISCVUInt32; virtual; abstract;
+
                      // Vector JIT bailout: saves dirty registers, sets JITSkipExecution=true, emits EmitEnd.
                      // Restores register allocator state afterwards so compilation can continue on the normal path.
                      procedure EmitVectorBailout;
@@ -8979,6 +9002,11 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      procedure EmitVectorEnabledCheck; virtual;
                      // Emit code to set VS=Dirty in MSTATUS (must be called after modifying vector registers)
                      procedure EmitSetVSDirty; virtual;
+                     // Vector register load/store primitives (VLEN-aware, overridden by backend)
+                     procedure EmitVectorLoad(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32); virtual;
+                     procedure EmitVectorStore(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32); virtual;
+                     procedure EmitVectorMov(const aDstRegister:TPasRISCVUInt8;const aSrcRegister:TPasRISCVUInt8); virtual;
+                     procedure EmitVectorOp(const aOpcode:TPasRISCVUInt8;const aDstRegister:TPasRISCVUInt8;const aSrc1Register:TPasRISCVUInt8;const aSrc2Register:TPasRISCVUInt8); virtual;
 {$endif}
 {$ifdef PasRISCVJustInTimeCompilerCBO}
                      procedure EmitCBOBailout;
@@ -10099,6 +10127,13 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
                      function DefaultFPURegisterMask:TPasRISCVUInt32; override;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+                     function DefaultVectorRegisterMask:TPasRISCVUInt32; override;
+                     procedure EmitVectorLoad(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32); override;
+                     procedure EmitVectorStore(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32); override;
+                     procedure EmitVectorMov(const aDstRegister:TPasRISCVUInt8;const aSrcRegister:TPasRISCVUInt8); override;
+                     procedure EmitVectorOp(const aOpcode:TPasRISCVUInt8;const aDstRegister:TPasRISCVUInt8;const aSrc1Register:TPasRISCVUInt8;const aSrc2Register:TPasRISCVUInt8); override;
+{$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVector}
                       // Vector JIT intrinsic overrides
@@ -10510,6 +10545,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
                      function DefaultFPURegisterMask:TPasRISCVUInt32; override;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+                     function DefaultVectorRegisterMask:TPasRISCVUInt32; override;
+{$endif}
                     public
                      constructor Create(const aHART:THART); override;
                      destructor Destroy; override;
@@ -10540,6 +10578,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      function AMOHostAvoidRegisterMask:TPasRISCVUInt32; override;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
                      function DefaultFPURegisterMask:TPasRISCVUInt32; override;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+                     function DefaultVectorRegisterMask:TPasRISCVUInt32; override;
 {$endif}
                     public
                      constructor Create(const aHART:THART); override;
@@ -10608,6 +10649,8 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
              private
               fMachine:TPasRISCV;
               fVector:Boolean;
+              fVLEN:TPasRISCVUInt32;
+              fVLENB:TPasRISCVUInt32;
               fPHandle:TPasRISCVUInt32;
               fBus:TBus;
               fAIARegFiles:TAIARegFiles;
@@ -10664,7 +10707,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$if defined(PasRISCVInterruptWakeupHardening)}
               fWakeGeneration:TPasRISCVUInt64;
 {$ifend}
-{$ifend}
+{$endif}
               procedure RestartExecution; inline;
               procedure UpdateMMU;
               function CheckPrivilege(const aCPUMode:THART.TMode;const aAccessType:TMMU.TAccessType):Boolean;
@@ -11607,6 +11650,9 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
        fLRSCMaximumCycles:TPasRISCVUInt64;
 
        fVector:Boolean;
+
+       fVLEN:TPasRISCVUInt32;
+       fVLENB:TPasRISCVUInt32;
 
 {$ifdef PasRISCVJustInTimeCompiler}
        fJITEnabled:Boolean;
@@ -50903,7 +50949,7 @@ begin
   fData[TAddress.VTYPE]:=TPasRISCVUInt64(1) shl 63; // vill=1
   fData[TAddress.VL]:=0;
   fData[TAddress.VSTART]:=0;
-  fData[TAddress.VLENB_CSR]:=VLENB;
+  fData[TAddress.VLENB_CSR]:=fHART.fVLENB;
   fData[TAddress.VXSAT]:=0;
   fData[TAddress.VXRM]:=0;
   fData[TAddress.VCSR]:=0;
@@ -51234,6 +51280,10 @@ begin
 
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  FillChar(fHostFPURegisterInfos,SizeOf(fHostFPURegisterInfos),#0);
+{$endif}
+
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ FillChar(fHostVectorRegisterInfos,SizeOf(fHostVectorRegisterInfos),#0);
 {$endif}
 
  fBlockMap:=TBlockMap.Create(0);
@@ -51623,6 +51673,9 @@ var GuestReg:TRegister;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
     FPURegister:TFPURegister;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+    VReg:TPasRISCVUInt32;
+{$endif}
 begin
 
  fLinkage:=TLinkage.Jmp;
@@ -51660,6 +51713,12 @@ begin
  fBlockVLChecked:=false;
  fBlockVTypeChecked:=false;
  fBlockVSDirtyEmitted:=false;
+ fHostVectorRegisterMask:=DefaultVectorRegisterMask;
+ for VReg:=0 to 31 do begin
+  fHostVectorRegisterInfos[VReg].HostRegister:=REG_ILL;
+  fHostVectorRegisterInfos[VReg].LastUsed:=0;
+  fHostVectorRegisterInfos[VReg].Flags:=0;
+ end;
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerCBO}
@@ -51680,6 +51739,9 @@ var SavedHostRegMask:TPasRISCVUInt32;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
     SavedFPURegInfos:TFPURegisterInfos;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+    SavedVectorRegisterInfos:TVectorRegisterInfos;
+{$endif}
     ExitFixup:TPasRISCVUInt32;
     RunStateExitFixup:TPasRISCVUInt32;
 begin
@@ -51695,6 +51757,9 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SavedFPURegInfos:=fHostFPURegisterInfos;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ SavedVectorRegisterInfos:=fHostVectorRegisterInfos;
+{$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerDebug}
  if fDebugJITCounter<60 then begin
@@ -51706,6 +51771,9 @@ begin
  SaveAllDirtyIntRegisters;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SaveAllDirtyFPURegisters;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ SaveAllDirtyVectorRegisters;
 {$endif}
 
  // 2. Reset host reg mask
@@ -51773,6 +51841,9 @@ begin
  fHostIntRegisterInfos:=SavedIntRegInfos;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  fHostFPURegisterInfos:=SavedFPURegInfos;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ fHostVectorRegisterInfos:=SavedVectorRegisterInfos;
 {$endif}
 
 end;
@@ -51897,6 +51968,7 @@ begin
 end;
 {$endif}
 
+
 function TPasRISCV.THART.TJustInTimeCompiler.GuestStateCSRPtrOffset:TPasRISCVUInt64;
 begin
  result:=TPasRISCVUInt64(TPasRISCVPtrUInt(Pointer(@fHART.fState.CSR)));
@@ -51919,6 +51991,7 @@ begin
  result:=TPasRISCVInt32(TPasRISCVPtrUInt(@PState(nil)^.JITMMIOScratch));
 end;
 {$endif}
+
 
 class function TPasRISCV.THART.TJustInTimeCompiler.JITDataTLBFillHelper(aHART:Pointer;aVirtualAddress:TPasRISCVUInt64;aTLBFieldOffset:TPasRISCVUInt64;aAlignment:TPasRISCVUInt64):TPasRISCVPtrUInt;
 var HART:THART;
@@ -52105,6 +52178,9 @@ var GuestReg:TRegister;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
     FPURegister:TFPURegister;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+    VReg:TPasRISCVUInt32;
+{$endif}
 begin
 
  fABIReclaimMask:=ABIReclaimHostRegisterMask;
@@ -52124,6 +52200,15 @@ begin
   fHostFPURegisterInfos[FPURegister].HostRegister:=REG_ILL;
   fHostFPURegisterInfos[FPURegister].Flags:=0;
   fHostFPURegisterInfos[FPURegister].LastUsed:=0;
+ end;
+{$endif}
+
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ fHostVectorRegisterMask:=DefaultVectorRegisterMask;
+ for VReg:=0 to 31 do begin
+  fHostVectorRegisterInfos[VReg].HostRegister:=REG_ILL;
+  fHostVectorRegisterInfos[VReg].Flags:=0;
+  fHostVectorRegisterInfos[VReg].LastUsed:=0;
  end;
 {$endif}
 end;
@@ -52334,6 +52419,9 @@ begin
    inc(BitIndex);
   end;
   fHostFPURegisterMask:=fHostFPURegisterMask and not (TPasRISCVUInt32(1) shl BitIndex);
+{$ifdef PasRISCVJustInTimeCompilerVector}
+  EvictVectorForFPU(TPasRISCVUInt32(1) shl BitIndex);
+{$endif}
   result:=TPasRISCVUInt8(BitIndex);
   exit;
  end;
@@ -52482,6 +52570,187 @@ end;
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVector}
+
+// Vector register allocator
+
+function TPasRISCV.THART.TJustInTimeCompiler.MapGuestToHostVectorRegister(const aGuestVReg:TPasRISCVUInt32;const aFlags:TPasRISCVUInt8):TPasRISCVUInt8;
+var HostRegister:TPasRISCVUInt8;
+begin
+
+ inc(fLRUCounter);
+
+ // Already mapped?
+ if fHostVectorRegisterInfos[aGuestVReg].HostRegister<>REG_ILL then begin
+  fHostVectorRegisterInfos[aGuestVReg].LastUsed:=fLRUCounter;
+  if (aFlags and REG_DST)<>0 then begin
+   fHostVectorRegisterInfos[aGuestVReg].Flags:=fHostVectorRegisterInfos[aGuestVReg].Flags or REG_DIRTY;
+  end;
+  result:=fHostVectorRegisterInfos[aGuestVReg].HostRegister;
+  exit;
+ end;
+
+ // Claim an XMM/YMM register
+ HostRegister:=ClaimHostVectorRegister;
+ fHostVectorRegisterInfos[aGuestVReg].HostRegister:=HostRegister;
+ fHostVectorRegisterInfos[aGuestVReg].LastUsed:=fLRUCounter;
+ fHostVectorRegisterInfos[aGuestVReg].Flags:=0;
+
+ // If SRC, load from TState
+ if (aFlags and REG_SRC)<>0 then begin
+  EmitVectorLoad(HostRegister,VMPtrRegister,GuestVectorRegisterOffset(aGuestVReg));
+  fHostVectorRegisterInfos[aGuestVReg].Flags:=REG_LOADED;
+ end;
+
+ if (aFlags and REG_DST)<>0 then begin
+  fHostVectorRegisterInfos[aGuestVReg].Flags:=fHostVectorRegisterInfos[aGuestVReg].Flags or REG_DIRTY;
+ end;
+
+ result:=HostRegister;
+
+end;
+
+function TPasRISCV.THART.TJustInTimeCompiler.ClaimHostVectorRegister(const aAvoidRegisterMask:TPasRISCVUInt32=0):TPasRISCVUInt8;
+var Mask:TPasRISCVUInt32;
+    BitIndex:TPasRISCVUInt32;
+    LRUBest:TPasRISCVUInt32;
+    LRUReg,VReg:TPasRISCVUInt32;
+begin
+
+ // Tier 1: Free XMM/YMM from vector mask
+ Mask:=fHostVectorRegisterMask and not aAvoidRegisterMask;
+ if Mask<>0 then begin
+  BitIndex:=0;
+  while (Mask and 1)=0 do begin
+   Mask:=Mask shr 1;
+   inc(BitIndex);
+  end;
+  fHostVectorRegisterMask:=fHostVectorRegisterMask and not (TPasRISCVUInt32(1) shl BitIndex);
+  // Evict FPU mapping on this host register if present
+{$ifdef PasRISCVJustInTimeCompilerFPU}
+  EvictFPUForVector(TPasRISCVUInt32(1) shl BitIndex);
+{$endif}
+  result:=TPasRISCVUInt8(BitIndex);
+  exit;
+ end;
+
+ // Tier 2: LRU eviction of vector mappings
+ LRUBest:=$ffffffff;
+ LRUReg:=0;
+ for VReg:=0 to 31 do begin
+  if (fHostVectorRegisterInfos[VReg].HostRegister<>REG_ILL) and
+     ((aAvoidRegisterMask and (TPasRISCVUInt32(1) shl fHostVectorRegisterInfos[VReg].HostRegister))=0) and
+     ((LRUBest=$ffffffff) or (fHostVectorRegisterInfos[VReg].LastUsed<LRUBest)) then begin
+   LRUBest:=fHostVectorRegisterInfos[VReg].LastUsed;
+   LRUReg:=VReg;
+  end;
+ end;
+
+ result:=fHostVectorRegisterInfos[LRUReg].HostRegister;
+ FreeGuestVectorRegister(LRUReg);
+
+ // FreeGuestVectorRegister added the bit back, clear it since we are claiming it
+ fHostVectorRegisterMask:=fHostVectorRegisterMask and not (TPasRISCVUInt32(1) shl result);
+
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.FreeHostVectorRegister(const aHostRegister:TPasRISCVUInt8);
+begin
+ fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl aHostRegister);
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.FreeGuestVectorRegister(const aGuestVReg:TPasRISCVUInt32);
+var HostRegister:TPasRISCVUInt8;
+begin
+
+ HostRegister:=fHostVectorRegisterInfos[aGuestVReg].HostRegister;
+ if HostRegister=REG_ILL then begin
+  exit;
+ end;
+
+ // Save dirty register back to TState
+ if (fHostVectorRegisterInfos[aGuestVReg].Flags and REG_DIRTY)<>0 then begin
+  EmitVectorStore(HostRegister,VMPtrRegister,GuestVectorRegisterOffset(aGuestVReg));
+ end;
+
+ // Release XMM/YMM register back to free mask
+ fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl HostRegister);
+ fHostVectorRegisterInfos[aGuestVReg].HostRegister:=REG_ILL;
+ fHostVectorRegisterInfos[aGuestVReg].Flags:=0;
+
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.SaveAllDirtyVectorRegisters;
+var VReg:TPasRISCVUInt32;
+begin
+ for VReg:=0 to 31 do begin
+  if (fHostVectorRegisterInfos[VReg].HostRegister<>REG_ILL) and
+     ((fHostVectorRegisterInfos[VReg].Flags and REG_DIRTY)<>0) then begin
+   EmitVectorStore(fHostVectorRegisterInfos[VReg].HostRegister,VMPtrRegister,GuestVectorRegisterOffset(VReg));
+   fHostVectorRegisterInfos[VReg].Flags:=fHostVectorRegisterInfos[VReg].Flags and not REG_DIRTY;
+  end;
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.ReloadAllMappedVectorRegisters;
+var VReg:TPasRISCVUInt32;
+begin
+ for VReg:=0 to 31 do begin
+  if fHostVectorRegisterInfos[VReg].HostRegister<>REG_ILL then begin
+   EmitVectorLoad(fHostVectorRegisterInfos[VReg].HostRegister,VMPtrRegister,GuestVectorRegisterOffset(VReg));
+  end;
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.FreeAllHostVectorRegisters;
+var VReg:TPasRISCVUInt32;
+begin
+ for VReg:=0 to 31 do begin
+  if fHostVectorRegisterInfos[VReg].HostRegister<>REG_ILL then begin
+   if (fHostVectorRegisterInfos[VReg].Flags and REG_DIRTY)<>0 then begin
+    EmitVectorStore(fHostVectorRegisterInfos[VReg].HostRegister,VMPtrRegister,GuestVectorRegisterOffset(VReg));
+   end;
+   fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl fHostVectorRegisterInfos[VReg].HostRegister);
+   fHostVectorRegisterInfos[VReg].HostRegister:=REG_ILL;
+   fHostVectorRegisterInfos[VReg].Flags:=0;
+   fHostVectorRegisterInfos[VReg].LastUsed:=0;
+  end;
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.EvictVectorForFPU(const aHostRegisterMask:TPasRISCVUInt32);
+var VReg:TPasRISCVUInt32;
+begin
+ for VReg:=0 to 31 do begin
+  if (fHostVectorRegisterInfos[VReg].HostRegister<>REG_ILL) and
+     ((aHostRegisterMask and (TPasRISCVUInt32(1) shl fHostVectorRegisterInfos[VReg].HostRegister))<>0) then begin
+   if (fHostVectorRegisterInfos[VReg].Flags and REG_DIRTY)<>0 then begin
+    EmitVectorStore(fHostVectorRegisterInfos[VReg].HostRegister,VMPtrRegister,GuestVectorRegisterOffset(VReg));
+   end;
+   fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl fHostVectorRegisterInfos[VReg].HostRegister);
+   fHostVectorRegisterInfos[VReg].HostRegister:=REG_ILL;
+   fHostVectorRegisterInfos[VReg].Flags:=0;
+  end;
+ end;
+end;
+
+{$ifdef PasRISCVJustInTimeCompilerFPU}
+procedure TPasRISCV.THART.TJustInTimeCompiler.EvictFPUForVector(const aHostRegisterMask:TPasRISCVUInt32);
+var FPURegister:TFPURegister;
+begin
+ for FPURegister:=TFPURegister.f0 to TFPURegister.f31 do begin
+  if (fHostFPURegisterInfos[FPURegister].HostRegister<>REG_ILL) and
+     ((aHostRegisterMask and (TPasRISCVUInt32(1) shl fHostFPURegisterInfos[FPURegister].HostRegister))<>0) then begin
+   if (fHostFPURegisterInfos[FPURegister].Flags and REG_DIRTY)<>0 then begin
+    EmitFPUStore(fHostFPURegisterInfos[FPURegister].HostRegister,VMPtrRegister,GuestFPURegisterOffset(FPURegister),true);
+   end;
+   fHostFPURegisterMask:=fHostFPURegisterMask or (TPasRISCVUInt32(1) shl fHostFPURegisterInfos[FPURegister].HostRegister);
+   fHostFPURegisterInfos[FPURegister].HostRegister:=REG_ILL;
+   fHostFPURegisterInfos[FPURegister].Flags:=0;
+  end;
+ end;
+end;
+{$endif}
+
 procedure TPasRISCV.THART.TJustInTimeCompiler.EmitVectorBailout;
 var HostTmp:TPasRISCVUInt8;
     SavedHostRegMask:TPasRISCVUInt32;
@@ -52491,6 +52760,7 @@ var HostTmp:TPasRISCVUInt8;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
     SavedFPURegInfos:TFPURegisterInfos;
 {$endif}
+    SavedVectorRegisterInfos:TVectorRegisterInfos;
 begin
  SavedHostRegMask:=fHostIntRegisterMask;
  SavedABIReclaimMask:=fABIReclaimMask;
@@ -52499,10 +52769,12 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SavedFPURegInfos:=fHostFPURegisterInfos;
 {$endif}
+ SavedVectorRegisterInfos:=fHostVectorRegisterInfos;
  SaveAllDirtyIntRegisters;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SaveAllDirtyFPURegisters;
 {$endif}
+ SaveAllDirtyVectorRegisters;
  HostTmp:=ClaimHostIntRegister;
  EmitNativeSetReg32s(HostTmp,TPasRISCVInt32(TPasMPBool32(true)));
  EmitNativeStore(HostTmp,VMPtrRegister,GuestJITSkipExecutionOffset,false);
@@ -52515,6 +52787,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  fHostFPURegisterInfos:=SavedFPURegInfos;
 {$endif}
+ fHostVectorRegisterInfos:=SavedVectorRegisterInfos;
 end;
 
 procedure TPasRISCV.THART.TJustInTimeCompiler.EmitVectorEnabledCheck;
@@ -52538,6 +52811,9 @@ var HostTmp:TPasRISCVUInt8;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
     SavedFPURegInfos:TFPURegisterInfos;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+    SavedVectorRegisterInfos:TVectorRegisterInfos;
+{$endif}
 begin
  SavedHostRegMask:=fHostIntRegisterMask;
  SavedABIReclaimMask:=fABIReclaimMask;
@@ -52546,9 +52822,15 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SavedFPURegInfos:=fHostFPURegisterInfos;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ SavedVectorRegisterInfos:=fHostVectorRegisterInfos;
+{$endif}
  SaveAllDirtyIntRegisters;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SaveAllDirtyFPURegisters;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ SaveAllDirtyVectorRegisters;
 {$endif}
  HostTmp:=ClaimHostIntRegister;
  EmitNativeSetReg32s(HostTmp,TPasRISCVInt32(TPasMPBool32(true)));
@@ -52561,6 +52843,9 @@ begin
  fHostIntRegisterInfos:=SavedIntRegInfos;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  fHostFPURegisterInfos:=SavedFPURegInfos;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ fHostVectorRegisterInfos:=SavedVectorRegisterInfos;
 {$endif}
 end;
 
@@ -58673,6 +58958,24 @@ end;
 
 {$ifend}
 
+// Vector register emit primitives (base class stubs)
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.EmitVectorLoad(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32);
+begin
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.EmitVectorStore(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32);
+begin
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.EmitVectorMov(const aDstRegister:TPasRISCVUInt8;const aSrcRegister:TPasRISCVUInt8);
+begin
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.EmitVectorOp(const aOpcode:TPasRISCVUInt8;const aDstRegister:TPasRISCVUInt8;const aSrc1Register:TPasRISCVUInt8;const aSrc2Register:TPasRISCVUInt8);
+begin
+end;
+
 // Vector JIT intrinsic base stubs
 {$if defined(PasRISCVJustInTimeCompiler) and defined(PasRISCVJustInTimeCompilerVector)}
 function TPasRISCV.THART.TJustInTimeCompiler.IntrinsicVSETVLI(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean;
@@ -58751,6 +59054,7 @@ begin
 end;
 {$ifend}
 
+
 {$if defined(PasRISCVJustInTimeCompilerTargetX8664)}
 
 { TJustInTimeCompilerX8664 }
@@ -58765,6 +59069,10 @@ begin
  fHasAVX2:=(CPUFeatures and CPUFeatures_X86_AVX2_Mask)<>0;
  fHasPCLMUL:=(CPUFeatures and CPUFeatures_X86_PCLMUL_Mask)<>0;
  fHasF16C:=(CPUFeatures and CPUFeatures_X86_F16C_Mask)<>0;
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ fJITVLEN:=aHART.fVLEN;
+ fJITVLENB:=aHART.fVLENB;
+{$endif}
 end;
 
 destructor TPasRISCV.THART.TJustInTimeCompilerX8664.Destroy;
@@ -58843,6 +59151,17 @@ begin
  result:=$3f;
 {$else}
  // SysV: XMM0-XMM15 are all caller-saved (16 regs)
+ result:=$ffff;
+{$endif}
+end;
+{$endif}
+
+{$ifdef PasRISCVJustInTimeCompilerVector}
+function TPasRISCV.THART.TJustInTimeCompilerX8664.DefaultVectorRegisterMask:TPasRISCVUInt32;
+begin
+{$ifdef Windows}
+ result:=$3f;
+{$else}
  result:=$ffff;
 {$endif}
 end;
@@ -60021,40 +60340,41 @@ end;
 
 // Zfa FLI constant tables (RISC-V Zfa spec, 32 entries indexed 0-31)
 class function TPasRISCV.THART.TJustInTimeCompilerX8664.GetFLiSValue(const aIndex:TPasRISCVUInt8):TPasRISCVUInt32;
-const FLiSTable:array[0..31] of TPasRISCVUInt32=(
- $bf800000, // 0: -1.0
- $00800000, // 1: minimum positive normal
- $37800000, // 2: 1.0 * 2^-16
- $38000000, // 3: 1.0 * 2^-15
- $3b800000, // 4: 1.0 * 2^-8
- $3c000000, // 5: 1.0 * 2^-7
- $3d800000, // 6: 0.0625 (1/16)
- $3e000000, // 7: 0.125  (1/8)
- $3e800000, // 8: 0.25
- $3ea00000, // 9: 0.3125
- $3ec00000, // 10: 0.375
- $3ee00000, // 11: 0.4375
- $3f000000, // 12: 0.5
- $3f200000, // 13: 0.625
- $3f400000, // 14: 0.75
- $3f600000, // 15: 0.875
- $3f800000, // 16: 1.0
- $3fa00000, // 17: 1.25
- $3fc00000, // 18: 1.5
- $3fe00000, // 19: 1.75
- $40000000, // 20: 2.0
- $40200000, // 21: 2.5
- $40400000, // 22: 3.0
- $40800000, // 23: 4.0
- $41000000, // 24: 8.0
- $41800000, // 25: 16.0
- $43000000, // 26: 128.0
- $43800000, // 27: 256.0
- $47000000, // 28: 32768.0
- $47800000, // 29: 65536.0
- $7f800000, // 30: +Inf
- $7fc00000  // 31: canonical NaN
-);
+const FLiSTable:array[0..31] of TPasRISCVUInt32=
+       (
+        $bf800000, // 0: -1.0
+        $00800000, // 1: minimum positive normal
+        $37800000, // 2: 1.0 * 2^-16
+        $38000000, // 3: 1.0 * 2^-15
+        $3b800000, // 4: 1.0 * 2^-8
+        $3c000000, // 5: 1.0 * 2^-7
+        $3d800000, // 6: 0.0625 (1/16)
+        $3e000000, // 7: 0.125  (1/8)
+        $3e800000, // 8: 0.25
+        $3ea00000, // 9: 0.3125
+        $3ec00000, // 10: 0.375
+        $3ee00000, // 11: 0.4375
+        $3f000000, // 12: 0.5
+        $3f200000, // 13: 0.625
+        $3f400000, // 14: 0.75
+        $3f600000, // 15: 0.875
+        $3f800000, // 16: 1.0
+        $3fa00000, // 17: 1.25
+        $3fc00000, // 18: 1.5
+        $3fe00000, // 19: 1.75
+        $40000000, // 20: 2.0
+        $40200000, // 21: 2.5
+        $40400000, // 22: 3.0
+        $40800000, // 23: 4.0
+        $41000000, // 24: 8.0
+        $41800000, // 25: 16.0
+        $43000000, // 26: 128.0
+        $43800000, // 27: 256.0
+        $47000000, // 28: 32768.0
+        $47800000, // 29: 65536.0
+        $7f800000, // 30: +Inf
+        $7fc00000  // 31: canonical NaN
+       );
 begin
  if aIndex<=31 then begin
   result:=FLiSTable[aIndex];
@@ -60064,40 +60384,41 @@ begin
 end;
 
 class function TPasRISCV.THART.TJustInTimeCompilerX8664.GetFLiDValue(const aIndex:TPasRISCVUInt8):TPasRISCVUInt64;
-const FLiDTable:array[0..31] of TPasRISCVUInt64=(
- $bff0000000000000, // 0: -1.0
- $0010000000000000, // 1: minimum positive normal
- $3ef0000000000000, // 2: 1.0 * 2^-16
- $3f00000000000000, // 3: 1.0 * 2^-15
- $3f70000000000000, // 4: 1.0 * 2^-8
- $3f80000000000000, // 5: 1.0 * 2^-7
- $3fb0000000000000, // 6: 0.0625
- $3fc0000000000000, // 7: 0.125
- $3fd0000000000000, // 8: 0.25
- $3fd4000000000000, // 9: 0.3125
- $3fd8000000000000, // 10: 0.375
- $3fdc000000000000, // 11: 0.4375
- $3fe0000000000000, // 12: 0.5
- $3fe4000000000000, // 13: 0.625
- $3fe8000000000000, // 14: 0.75
- $3fec000000000000, // 15: 0.875
- $3ff0000000000000, // 16: 1.0
- $3ff4000000000000, // 17: 1.25
- $3ff8000000000000, // 18: 1.5
- $3ffc000000000000, // 19: 1.75
- $4000000000000000, // 20: 2.0
- $4004000000000000, // 21: 2.5
- $4008000000000000, // 22: 3.0
- $4010000000000000, // 23: 4.0
- $4020000000000000, // 24: 8.0
- $4030000000000000, // 25: 16.0
- $4060000000000000, // 26: 128.0
- $4070000000000000, // 27: 256.0
- $40e0000000000000, // 28: 32768.0
- $40f0000000000000, // 29: 65536.0
- $7ff0000000000000, // 30: +Inf
- $7ff8000000000000  // 31: canonical NaN
-);
+const FLiDTable:array[0..31] of TPasRISCVUInt64=
+       (
+        $bff0000000000000, // 0: -1.0
+        $0010000000000000, // 1: minimum positive normal
+        $3ef0000000000000, // 2: 1.0 * 2^-16
+        $3f00000000000000, // 3: 1.0 * 2^-15
+        $3f70000000000000, // 4: 1.0 * 2^-8
+        $3f80000000000000, // 5: 1.0 * 2^-7
+        $3fb0000000000000, // 6: 0.0625
+        $3fc0000000000000, // 7: 0.125
+        $3fd0000000000000, // 8: 0.25
+        $3fd4000000000000, // 9: 0.3125
+        $3fd8000000000000, // 10: 0.375
+        $3fdc000000000000, // 11: 0.4375
+        $3fe0000000000000, // 12: 0.5
+        $3fe4000000000000, // 13: 0.625
+        $3fe8000000000000, // 14: 0.75
+        $3fec000000000000, // 15: 0.875
+        $3ff0000000000000, // 16: 1.0
+        $3ff4000000000000, // 17: 1.25
+        $3ff8000000000000, // 18: 1.5
+        $3ffc000000000000, // 19: 1.75
+        $4000000000000000, // 20: 2.0
+        $4004000000000000, // 21: 2.5
+        $4008000000000000, // 22: 3.0
+        $4010000000000000, // 23: 4.0
+        $4020000000000000, // 24: 8.0
+        $4030000000000000, // 25: 16.0
+        $4060000000000000, // 26: 128.0
+        $4070000000000000, // 27: 256.0
+        $40e0000000000000, // 28: 32768.0
+        $40f0000000000000, // 29: 65536.0
+        $7ff0000000000000, // 30: +Inf
+        $7ff8000000000000  // 31: canonical NaN
+       );
 begin
  if aIndex<=31 then begin
   result:=FLiDTable[aIndex];
@@ -60107,40 +60428,41 @@ begin
 end;
 
 class function TPasRISCV.THART.TJustInTimeCompilerX8664.GetFLiHValue(const aIndex:TPasRISCVUInt8):TPasRISCVUInt16;
-const FLiHTable:array[0..31] of TPasRISCVUInt16=(
- $bc00, // 0: -1.0
- $0400, // 1: minimum positive normal
- $0100, // 2: 1.0 * 2^-16 (min subnormal in fp16)
- $0200, // 3: 1.0 * 2^-15
- $1400, // 4: 1.0 * 2^-8
- $1800, // 5: 1.0 * 2^-7
- $2c00, // 6: 0.0625
- $3000, // 7: 0.125
- $3400, // 8: 0.25
- $3500, // 9: 0.3125
- $3600, // 10: 0.375
- $3700, // 11: 0.4375
- $3800, // 12: 0.5
- $3900, // 13: 0.625
- $3a00, // 14: 0.75
- $3b00, // 15: 0.875
- $3c00, // 16: 1.0
- $3d00, // 17: 1.25
- $3e00, // 18: 1.5
- $3f00, // 19: 1.75
- $4000, // 20: 2.0
- $4100, // 21: 2.5
- $4200, // 22: 3.0
- $4400, // 23: 4.0
- $4800, // 24: 8.0
- $4c00, // 25: 16.0
- $5800, // 26: 128.0
- $5c00, // 27: 256.0
- $7800, // 28: 32768.0
- $7c00, // 29: 65536.0 (actually +Inf in fp16)
- $7c00, // 30: +Inf
- $7e00  // 31: canonical NaN
-);
+const FLiHTable:array[0..31] of TPasRISCVUInt16=
+       (
+        $bc00, // 0: -1.0
+        $0400, // 1: minimum positive normal
+        $0100, // 2: 1.0 * 2^-16 (min subnormal in fp16)
+        $0200, // 3: 1.0 * 2^-15
+        $1400, // 4: 1.0 * 2^-8
+        $1800, // 5: 1.0 * 2^-7
+        $2c00, // 6: 0.0625
+        $3000, // 7: 0.125
+        $3400, // 8: 0.25
+        $3500, // 9: 0.3125
+        $3600, // 10: 0.375
+        $3700, // 11: 0.4375
+        $3800, // 12: 0.5
+        $3900, // 13: 0.625
+        $3a00, // 14: 0.75
+        $3b00, // 15: 0.875
+        $3c00, // 16: 1.0
+        $3d00, // 17: 1.25
+        $3e00, // 18: 1.5
+        $3f00, // 19: 1.75
+        $4000, // 20: 2.0
+        $4100, // 21: 2.5
+        $4200, // 22: 3.0
+        $4400, // 23: 4.0
+        $4800, // 24: 8.0
+        $4c00, // 25: 16.0
+        $5800, // 26: 128.0
+        $5c00, // 27: 256.0
+        $7800, // 28: 32768.0
+        $7c00, // 29: 65536.0 (actually +Inf in fp16)
+        $7c00, // 30: +Inf
+        $7e00  // 31: canonical NaN
+       );
 begin
  if aIndex<=31 then begin
   result:=FLiHTable[aIndex];
@@ -60150,13 +60472,14 @@ begin
 end;
 
 procedure TPasRISCV.THART.TJustInTimeCompilerX8664.EmitSaveAndSetRoundingMode(const aRM:TPasRISCVUInt8;const aTempRegister:TPasRISCVUInt8);
-const RVRMToMXCSR:array[0..4] of TPasRISCVUInt32=(
-       $0000, // 0: RNE => MXCSR 00
-       $6000, // 1: RTZ => MXCSR 11
-       $2000, // 2: RDN => MXCSR 01
-       $4000, // 3: RUP => MXCSR 10
-       $0000  // 4: RMM => MXCSR 00 (best approximation)
-      );
+const RVRMToMXCSR:array[0..4] of TPasRISCVUInt32=
+       (
+        $0000, // 0: RNE => MXCSR 00
+        $6000, // 1: RTZ => MXCSR 11
+        $2000, // 2: RDN => MXCSR 01
+        $4000, // 3: RUP => MXCSR 10
+        $0000  // 4: RMM => MXCSR 00 (best approximation)
+       );
 begin
  // sub rsp, 8 (allocate for two MXCSR slots)
  EmitImmOp(ALU_SUB,TPasRISCVUInt8(ord(TX64Register.rRSP)),8,true);
@@ -60412,6 +60735,9 @@ var HostVirtualAddress,HostVPN,HostIndex:TPasRISCVUInt8;
     SavedFPURegInfos:TFPURegisterInfos;
     FPURegister:TFPURegister;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+    SavedVectorRegisterInfos:TVectorRegisterInfos;
+{$endif}
     SideExitBailoutFixup:TPasRISCVUInt32;
     SideExitDoneFixup:TPasRISCVUInt32;
     HelperReg:TPasRISCVUInt8;
@@ -60478,6 +60804,9 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SavedFPURegInfos:=fHostFPURegisterInfos;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ SavedVectorRegisterInfos:=fHostVectorRegisterInfos;
+{$endif}
 
 {$ifdef JITMMIOFastPath}
  // Pre-store value for MMIO stores: write store source register to JITMMIOScratch
@@ -60495,6 +60824,11 @@ begin
    EmitFPUStore(fHostFPURegisterInfos[FPURegister].HostRegister,VMPtrRegister,GuestFPURegisterOffset(FPURegister),true);
   end;
  end;
+{$endif}
+
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ // Save dirty mapped vector regs to TState before helper call (XMMs/YMMs are caller-saved)
+ SaveAllDirtyVectorRegisters;
 {$endif}
 
  // Push all caller-saved registers to preserve runtime state across call
@@ -60583,6 +60917,11 @@ begin
  end;
 {$endif}
 
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ // Reload all mapped vector regs from TState (XMMs/YMMs were clobbered by helper call)
+ ReloadAllMappedVectorRegisters;
+{$endif}
+
  // Load helper result from TState scratch into aHostAddrRegister
  EmitNativeLoad(aHostAddrRegister,VMPtrRegister,GuestJITScratchOffset,true);
 
@@ -60601,6 +60940,9 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  SaveAllDirtyFPURegisters;
 {$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ SaveAllDirtyVectorRegisters;
+{$endif}
 
  // Set JITSkipExecution := true so interpreter doesn't re-enter JIT for this instruction
  // Use HostVPN (claimed, not mapped) to avoid clobbering a dirty guest-mapped register
@@ -60615,6 +60957,9 @@ begin
  fHostIntRegisterInfos:=SavedIntRegInfos;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  fHostFPURegisterInfos:=SavedFPURegInfos;
+{$endif}
+{$ifdef PasRISCVJustInTimeCompilerVector}
+ fHostVectorRegisterInfos:=SavedVectorRegisterInfos;
 {$endif}
 
  // .hit: TLB check passed (JE from TEST above)
@@ -66687,6 +67032,59 @@ end;
 {$ifend}
 
 {$ifdef PasRISCVJustInTimeCompilerVector}
+
+// Vector register emit primitives (x86-64)
+
+procedure TPasRISCV.THART.TJustInTimeCompilerX8664.EmitVectorLoad(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32);
+begin
+ if fHasAVX2 then begin
+  // VMOVDQU ymm, [base+offset] — VEX.256.F3.0F.WIG 6F /r
+  EmitVEXMemOp($02,true,false,$01,$6f,aHostRegister,aBaseRegister,aOffset,0);
+ end else begin
+  // MOVDQU xmm, [base+offset] — F3 0F 6F /r
+  EmitSSE2MemOp($f3,$6f,aHostRegister,aBaseRegister,aOffset);
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompilerX8664.EmitVectorStore(const aHostRegister:TPasRISCVUInt8;const aBaseRegister:TPasRISCVUInt8;const aOffset:TPasRISCVInt32);
+begin
+ if fHasAVX2 then begin
+  // VMOVDQU [base+offset], ymm — VEX.256.F3.0F.WIG 7F /r
+  EmitVEXMemOp($02,true,false,$01,$7f,aHostRegister,aBaseRegister,aOffset,0);
+ end else begin
+  // MOVDQU [base+offset], xmm — F3 0F 7F /r
+  EmitSSE2MemOp($f3,$7f,aHostRegister,aBaseRegister,aOffset);
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompilerX8664.EmitVectorMov(const aDstRegister:TPasRISCVUInt8;const aSrcRegister:TPasRISCVUInt8);
+begin
+ if aDstRegister<>aSrcRegister then begin
+  if fHasAVX2 then begin
+   // VMOVDQU ymm, ymm — VEX.256.F3.0F.WIG 6F /r
+   EmitVEXOp($02,true,false,$01,$6f,aDstRegister,aSrcRegister,0);
+  end else begin
+   // MOVDQU xmm, xmm — F3 0F 6F /r
+   EmitSSE2Op($f3,$6f,aDstRegister,aSrcRegister);
+  end;
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompilerX8664.EmitVectorOp(const aOpcode:TPasRISCVUInt8;const aDstRegister:TPasRISCVUInt8;const aSrc1Register:TPasRISCVUInt8;const aSrc2Register:TPasRISCVUInt8);
+begin
+ if fHasAVX2 then begin
+  // VPxxx ymm_dst, ymm_src1, ymm_src2 — VEX.256.66.0F opcode /r
+  EmitVEXOp($01,true,false,$01,aOpcode,aDstRegister,aSrc2Register,aSrc1Register);
+ end else begin
+  // SSE 2-operand: dst=dst OP src2, so ensure dst contains src1 first
+  if aDstRegister<>aSrc1Register then begin
+   EmitVectorMov(aDstRegister,aSrc1Register);
+  end;
+  // Pxxx xmm_dst, xmm_src2 — 66 0F opcode /r
+  EmitSSE2Op($66,aOpcode,aDstRegister,aSrc2Register);
+ end;
+end;
+
 // Vector JIT intrinsic implementations (x86-64)
 
 procedure TPasRISCV.THART.TJustInTimeCompilerX8664.EmitVectorEnabledCheck;
@@ -66861,11 +67259,11 @@ begin
    exit;
   end;
  end;
- if (TPasRISCVUInt64(VLEN)*LMUL8)<(SEW*8) then begin
+ if (TPasRISCVUInt64(fJITVLEN)*LMUL8)<(SEW*8) then begin
   result:=false;
   exit;
  end;
- VLMAX:=((VLEN div SEW)*LMUL8) shr 3;
+ VLMAX:=((fJITVLEN div SEW)*LMUL8) shr 3;
 
  EmitVectorEnabledCheck;
 
@@ -66988,11 +67386,11 @@ begin
    exit;
   end;
  end;
- if (TPasRISCVUInt64(VLEN)*LMUL8)<(SEW*8) then begin
+ if (TPasRISCVUInt64(fJITVLEN)*LMUL8)<(SEW*8) then begin
   result:=false;
   exit;
  end;
- VLMAX:=((VLEN div SEW)*LMUL8) shr 3;
+ VLMAX:=((fJITVLEN div SEW)*LMUL8) shr 3;
 
  // Both AVL and VLMAX are compile-time constants
  if AVL<=VLMAX then begin
@@ -67153,8 +67551,8 @@ begin
   exit;
  end;
 
- // Only JIT when VL*EEW/8 == VLENB (full register load)
- if (VL_val*(EEW shr 3))<>VLENB then begin
+ // Only JIT when VL*EEW/8 == fJITVLENB (full register load)
+ if (VL_val*(EEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -67178,12 +67576,12 @@ begin
  HostAddr:=ClaimHostIntRegister;
  EmitDataTLBLookup(HostAddr,RS1,0,TLB_R,1);
 
- // === Page-crossing check: if (addr & $fff) + VLENB > $1000, bailout ===
+ // === Page-crossing check: if (addr & $fff) + fJITVLENB > $1000, bailout ===
  HostTmp:=ClaimHostIntRegister;
  EmitMOVRegReg(HostTmp,HostAddr,true);
  EmitNativeAndi(HostTmp,HostTmp,$fff);
  HostCmp:=ClaimHostIntRegister;
- EmitNativeSetReg32s(HostCmp,$1000-VLENB+1);
+ EmitNativeSetReg32s(HostCmp,($1000-fJITVLENB)+1);
  Emit2RegOp(X86_CMP,HostTmp,HostCmp,false);
  FreeHostIntRegister(HostCmp);
  // JB .page_ok (page offset < threshold means no crossing)
@@ -67196,27 +67594,15 @@ begin
 
  // === Emit vector load from host memory, store to vector register ===
  if fHasAVX2 then begin
-{$ifdef VLEN128}
-  // VMOVDQU xmm0, [HostAddr] — VEX.128.F3.0F 6F
-  EmitVEXMemOp(2,false,false,1,$6f,0,HostAddr,0,0);
-  // VMOVDQU [VMPtr+vregOffset], xmm0 — VEX.128.F3.0F 7F
-  EmitVEXMemOp(2,false,false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
-{$else}
   // VMOVDQU ymm0, [HostAddr] — VEX.256.F3.0F 6F
   EmitVEXMemOp(2,true,false,1,$6f,0,HostAddr,0,0);
   // VMOVDQU [VMPtr+vregOffset], ymm0 — VEX.256.F3.0F 7F
   EmitVEXMemOp(2,true,false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
-{$endif}
  end else begin
   // MOVDQU xmm0, [HostAddr] — F3 0F 6F
   EmitSSE2MemOp($f3,$6f,0,HostAddr,0);
   // MOVDQU [VMPtr+vregOffset], xmm0 — F3 0F 7F
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  // VLEN=256 without AVX2: second 16 bytes via SSE2
-  EmitSSE2MemOp($f3,$6f,0,HostAddr,16);
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostAddr);
@@ -67348,8 +67734,8 @@ begin
   exit;
  end;
 
- // Only JIT when VL*EEW/8 == VLENB (full register store)
- if (VL_val*(EEW shr 3))<>VLENB then begin
+ // Only JIT when VL*EEW/8 == fJITVLENB (full register store)
+ if (VL_val*(EEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -67373,12 +67759,12 @@ begin
  HostAddr:=ClaimHostIntRegister;
  EmitDataTLBLookup(HostAddr,RS1,0,TLB_W,1);
 
- // === Page-crossing check: if (addr & $fff) + VLENB > $1000, bailout ===
+ // === Page-crossing check: if (addr & $fff) + fJITVLENB > $1000, bailout ===
  HostTmp:=ClaimHostIntRegister;
  EmitMOVRegReg(HostTmp,HostAddr,true);
  EmitNativeAndi(HostTmp,HostTmp,$fff);
  HostCmp:=ClaimHostIntRegister;
- EmitNativeSetReg32s(HostCmp,$1000-VLENB+1);
+ EmitNativeSetReg32s(HostCmp,($1000-fJITVLENB)+1);
  Emit2RegOp(X86_CMP,HostTmp,HostCmp,false);
  FreeHostIntRegister(HostCmp);
  // JB .page_ok (page offset < threshold means no crossing)
@@ -67391,27 +67777,15 @@ begin
 
  // === Load from vector register, store to host memory ===
  if fHasAVX2 then begin
-{$ifdef VLEN128}
-  // VMOVDQU xmm0, [VMPtr+vregOffset] — VEX.128.F3.0F 6F
-  EmitVEXMemOp(2,false,false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs3),0);
-  // VMOVDQU [HostAddr], xmm0 — VEX.128.F3.0F 7F
-  EmitVEXMemOp(2,false,false,1,$7f,0,HostAddr,0,0);
-{$else}
   // VMOVDQU ymm0, [VMPtr+vregOffset] — VEX.256.F3.0F 6F
   EmitVEXMemOp(2,true,false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs3),0);
   // VMOVDQU [HostAddr], ymm0 — VEX.256.F3.0F 7F
   EmitVEXMemOp(2,true,false,1,$7f,0,HostAddr,0,0);
-{$endif}
  end else begin
   // MOVDQU xmm0, [VMPtr+vregOffset] — F3 0F 6F
   EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs3));
   // MOVDQU [HostAddr], xmm0 — F3 0F 7F
   EmitSSE2MemOp($f3,$7f,0,HostAddr,0);
-{$ifndef VLEN128}
-  // VLEN=256 without AVX2: second 16 bytes via SSE2
-  EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs3)+16);
-  EmitSSE2MemOp($f3,$7f,0,HostAddr,16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostAddr);
@@ -67424,17 +67798,13 @@ end;
 
 function TPasRISCV.THART.TJustInTimeCompilerX8664.IntrinsicVMVVX(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean;
 // JIT for vmv.v.x: broadcast scalar GPR rs1 to all elements of vector register vd
-// Conditions: unmasked, vs2=0, EMUL=1, VSTART=0, full register (VL*SEW/8==VLENB)
+// Conditions: unmasked, vs2=0, EMUL=1, VSTART=0, full register (VL*SEW/8==fJITVLENB)
 var vd,vs2:TPasRISCVUInt32;
     RS1:TRegister;
     Unmasked:Boolean;
     SEW,LMUL8,EMUL8,VL_val:TPasRISCVUInt64;
     HostRS1:TPasRISCVUInt8;
-{$ifdef VLEN128}
     UseL:Boolean;
-{$else}
-    UseL:Boolean;
-{$endif}
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -67501,8 +67871,8 @@ begin
   exit;
  end;
 
- // Only JIT full register broadcast (VL*SEW/8 == VLENB)
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ // Only JIT full register broadcast (VL*SEW/8 == fJITVLENB)
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -67527,11 +67897,7 @@ begin
  EmitNativeLoad(HostRS1,VMPtrRegister,GuestIntRegisterOffset(RS1),true);
 
  // === Broadcast scalar to xmm0/ymm0 and store to vector register ===
-{$ifdef VLEN128}
- UseL:=false;
-{$else}
- UseL:=true;
-{$endif}
+ UseL:=fHasAVX2;
 
  if fHasAVX2 then begin
   // VMOVD/VMOVQ xmm0, HostRS1
@@ -67603,10 +67969,6 @@ begin
   end;
   // MOVDQU [VMPtr+vregOffset], xmm0
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  // VLEN=256 without AVX2: store same xmm0 to second half
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostRS1);
@@ -67622,16 +67984,12 @@ end;
 
 function TPasRISCV.THART.TJustInTimeCompilerX8664.IntrinsicVMVVI(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean;
 // JIT for vmv.v.i: broadcast sign-extended 5-bit immediate to all elements of vector register vd
-// Conditions: unmasked, vs2=0, EMUL=1, VSTART=0, full register (VL*SEW/8==VLENB)
+// Conditions: unmasked, vs2=0, EMUL=1, VSTART=0, full register (VL*SEW/8==fJITVLENB)
 var vd,vs2:TPasRISCVUInt32;
     Unmasked:Boolean;
     SEW,LMUL8,EMUL8,VL_val,ImmVal:TPasRISCVUInt64;
     HostTmp:TPasRISCVUInt8;
-{$ifdef VLEN128}
     UseL:Boolean;
-{$else}
-    UseL:Boolean;
-{$endif}
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -67696,7 +68054,7 @@ begin
   exit;
  end;
 
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -67730,11 +68088,7 @@ begin
   EmitNativeSetReg32s(HostTmp,TPasRISCVInt32(ImmVal));
  end;
 
-{$ifdef VLEN128}
- UseL:=false;
-{$else}
- UseL:=true;
-{$endif}
+ UseL:=fHasAVX2;
 
  if fHasAVX2 then begin
   if SEW=64 then begin
@@ -67789,9 +68143,6 @@ begin
    end;
   end;
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostTmp);
@@ -67807,18 +68158,12 @@ end;
 
 function TPasRISCV.THART.TJustInTimeCompilerX8664.IntrinsicVArithVV(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean;
 // JIT for vadd/vsub/vand/vor/vxor.vv: vector-vector arithmetic/logic
-// Conditions: unmasked, EMUL=1, VSTART=0, full register (VL*SEW/8==VLENB)
+// Conditions: unmasked, EMUL=1, VSTART=0, full register (VL*SEW/8==fJITVLENB)
 // Pattern: load vs2→xmm0, load vs1→xmm1, xmm0 = xmm0 OP xmm1, store xmm0→vd
 var vd,vs1,vs2,funct6:TPasRISCVUInt32;
-    Unmasked:Boolean;
+    Unmasked,UseL:Boolean;
     SEW,LMUL8,EMUL8,VL_val:TPasRISCVUInt64;
     SSEOpcode:TPasRISCVUInt8;
-
-{$ifdef VLEN128}
-    UseL:Boolean;
-{$else}
-    UseL:Boolean;
-{$endif}
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -67944,7 +68289,7 @@ begin
  end;
 
  // Only JIT full register operations
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -67964,11 +68309,7 @@ begin
  EmitVectorVLCheck(VL_val);
  EmitVectorVTypeCheck(fHART.fState.CSR.fData[TCSR.TAddress.VTYPE]);
 
-{$ifdef VLEN128}
- UseL:=false;
-{$else}
- UseL:=true;
-{$endif}
+ UseL:=fHasAVX2;
 
  // === Load vs2 and vs1, operate, store to vd ===
  if fHasAVX2 then begin
@@ -67989,13 +68330,6 @@ begin
   EmitSSE2Op($66,SSEOpcode,0,1);
   // MOVDQU [VMPtr+vdOffset], xmm0
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  // VLEN=256 without AVX2: second 16 bytes
-  EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2)+16);
-  EmitSSE2MemOp($f3,$6f,1,VMPtrRegister,GuestVectorRegisterOffset(vs1)+16);
-  EmitSSE2Op($66,SSEOpcode,0,1);
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(-1);
@@ -68009,20 +68343,15 @@ end;
 
 function TPasRISCV.THART.TJustInTimeCompilerX8664.IntrinsicVArithVX(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean;
 // JIT for vadd/vsub/vrsub/vand/vor/vxor.vx: broadcast rs1, operate with vs2
-// Conditions: unmasked, EMUL=1, VSTART=0, full register (VL*SEW/8==VLENB)
+// Conditions: unmasked, EMUL=1, VSTART=0, full register (VL*SEW/8==fJITVLENB)
 var vd,vs2,funct6:TPasRISCVUInt32;
     rs1:TRegister;
-    Unmasked:Boolean;
+    Unmasked,UseL:Boolean;
     SEW,LMUL8,EMUL8,VL_val:TPasRISCVUInt64;
     vsew:TPasRISCVUInt32;
     SSEOpcode:TPasRISCVUInt8;
     IsVRSUB:Boolean;
     HostScalar:TPasRISCVUInt8;
-{$ifdef VLEN128}
-    UseL:Boolean;
-{$else}
-    UseL:Boolean;
-{$endif}
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -68167,7 +68496,7 @@ begin
   exit;
  end;
 
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -68187,11 +68516,7 @@ begin
  EmitVectorVLCheck(VL_val);
  EmitVectorVTypeCheck(fHART.fState.CSR.fData[TCSR.TAddress.VTYPE]);
 
-{$ifdef VLEN128}
- UseL:=false;
-{$else}
- UseL:=true;
-{$endif}
+ UseL:=fHasAVX2;
 
  // === Load scalar rs1 and broadcast to xmm1/ymm1 ===
  HostScalar:=ClaimHostIntRegister;
@@ -68276,18 +68601,6 @@ begin
   end;
   // Store
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  // Second 128-bit half
-  EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2)+16);
-  if IsVRSUB then begin
-   EmitSSE2Op($66,$6f,2,1);
-   EmitSSE2Op($66,SSEOpcode,2,0);
-   EmitSSE2Op($66,$6f,0,2);
-  end else begin
-   EmitSSE2Op($66,SSEOpcode,0,1);
-  end;
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostScalar);
@@ -68303,20 +68616,15 @@ end;
 
 function TPasRISCV.THART.TJustInTimeCompilerX8664.IntrinsicVArithVI(const aInstruction:TPasRISCVUInt32;const aParameter0,aParameter1,aParameter2,aParameter3:TPasRISCVUInt64):Boolean;
 // JIT for vadd/vrsub/vand/vor/vxor.vi: broadcast sign-extended imm5, operate with vs2
-// Conditions: unmasked, EMUL=1, VSTART=0, full register (VL*SEW/8==VLENB)
+// Conditions: unmasked, EMUL=1, VSTART=0, full register (VL*SEW/8==fJITVLENB)
 var vd,vs2,funct6:TPasRISCVUInt32;
-    Unmasked:Boolean;
+    Unmasked,UseL:Boolean;
     SEW,LMUL8,EMUL8,VL_val:TPasRISCVUInt64;
     vsew:TPasRISCVUInt32;
     Imm5:TPasRISCVInt64;
     SSEOpcode:TPasRISCVUInt8;
     IsVRSUB:Boolean;
     HostScalar:TPasRISCVUInt8;
-{$ifdef VLEN128}
-    UseL:Boolean;
-{$else}
-    UseL:Boolean;
-{$endif}
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -68438,7 +68746,7 @@ begin
   exit;
  end;
 
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -68461,11 +68769,7 @@ begin
  EmitVectorVLCheck(VL_val);
  EmitVectorVTypeCheck(fHART.fState.CSR.fData[TCSR.TAddress.VTYPE]);
 
-{$ifdef VLEN128}
- UseL:=false;
-{$else}
- UseL:=true;
-{$endif}
+ UseL:=fHasAVX2;
 
  // === Load immediate into GPR, broadcast to xmm1/ymm1 ===
  HostScalar:=ClaimHostIntRegister;
@@ -68544,17 +68848,6 @@ begin
    EmitSSE2Op($66,SSEOpcode,0,1);
   end;
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2)+16);
-  if IsVRSUB then begin
-   EmitSSE2Op($66,$6f,2,1);
-   EmitSSE2Op($66,SSEOpcode,2,0);
-   EmitSSE2Op($66,$6f,0,2);
-  end else begin
-   EmitSSE2Op($66,SSEOpcode,0,1);
-  end;
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostScalar);
@@ -68573,13 +68866,7 @@ function TPasRISCV.THART.TJustInTimeCompilerX8664.IntrinsicVMVNR(const aInstruct
 // No masking, no VL/VTYPE dependency. Only needs VSTART=0 check.
 // Emits N × MOVDQU/VMOVDQU pairs (load from vs2, store to vd)
 var vd,vs2,vs1Field,NumRegs,RegIdx:TPasRISCVUInt32;
-    Unmasked:Boolean;
-
-{$ifdef VLEN128}
-    UseL:Boolean;
-{$else}
-    UseL:Boolean;
-{$endif}
+    Unmasked,UseL:Boolean;
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -68617,11 +68904,7 @@ begin
 
  EmitVectorVStartCheck(-1);
 
-{$ifdef VLEN128}
- UseL:=false;
-{$else}
- UseL:=true;
-{$endif}
+ UseL:=fHasAVX2;
 
  // === Copy N registers: load from vs2+i, store to vd+i ===
  for RegIdx:=0 to NumRegs-1 do begin
@@ -68635,11 +68918,6 @@ begin
    EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset((vs2+RegIdx) and 31));
    // MOVDQU [VMPtr + vdRegOffset], xmm0
    EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset((vd+RegIdx) and 31));
-{$ifndef VLEN128}
-   // VLEN=256: second 16 bytes
-   EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset((vs2+RegIdx) and 31)+16);
-   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset((vd+RegIdx) and 31)+16);
-{$endif}
   end;
  end;
 
@@ -68663,9 +68941,6 @@ var vd,vs1,vs2,funct6:TPasRISCVUInt32;
     CmpOpcode:TPasRISCVUInt8;
     IsNotEqual:Boolean;
     HostMask:TPasRISCVUInt8;
-{$ifndef VLEN128}
-    HostMask2:TPasRISCVUInt8;
-{$endif}
 begin
  // Decode instruction fields
  vd:=(aInstruction shr 7) and $1f;
@@ -68764,12 +69039,12 @@ begin
   exit;
  end;
 
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
 
- NumElements:=VLENB div (SEW shr 3);
+ NumElements:=fJITVLENB div (SEW shr 3);
  MaskBits:=(TPasRISCVUInt64(1) shl NumElements)-1;
 
  EmitVectorEnabledCheck;
@@ -68794,16 +69069,16 @@ begin
  if fHasAVX2 and (vsew<>1) then begin
   // AVX2 path: SEW=8 (PCMPEQB→PMOVMSKB) and SEW=32 (PCMPEQD→MOVMSKPS)
   // SEW=16 uses SSE2 path below to avoid AVX2 lane-crossing issues in PACKSSWB
-  EmitVEXMemOp(2,{$ifdef VLEN128}false{$else}true{$endif},false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2),0);
-  EmitVEXMemOp(2,{$ifdef VLEN128}false{$else}true{$endif},false,1,$6f,1,VMPtrRegister,GuestVectorRegisterOffset(vs1),0);
+  EmitVEXMemOp(2,fHasAVX2,false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2),0);
+  EmitVEXMemOp(2,fHasAVX2,false,1,$6f,1,VMPtrRegister,GuestVectorRegisterOffset(vs1),0);
   // VPCMPEQB/D: VEX.L.66.0F opcode /r with vvvv=xmm0
-  EmitVEXOp(1,{$ifdef VLEN128}false{$else}true{$endif},false,1,CmpOpcode,0,1,0);
+  EmitVEXOp(1,fHasAVX2,false,1,CmpOpcode,0,1,0);
   if vsew=0 then begin
    // SEW=8: VPMOVMSKB
-   EmitVEXOp(1,{$ifdef VLEN128}false{$else}true{$endif},false,1,$d7,HostMask,0,0);
+   EmitVEXOp(1,fHasAVX2,false,1,$d7,HostMask,0,0);
   end else begin
    // SEW=32: VMOVMSKPS
-   EmitVEXOp(0,{$ifdef VLEN128}false{$else}true{$endif},false,1,$50,HostMask,0,0);
+   EmitVEXOp(0,fHasAVX2,false,1,$50,HostMask,0,0);
   end;
  end else begin
   // SSE2 path
@@ -68826,29 +69101,6 @@ begin
    // SEW=32: MOVMSKPS HostMask, xmm0: NP 0F 50 /r
    EmitSSE2Op(-1,$50,HostMask,0);
   end;
-{$ifndef VLEN128}
-  // VLEN=256 SSE2: process second 16 bytes
-  EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2)+16);
-  EmitSSE2MemOp($f3,$6f,1,VMPtrRegister,GuestVectorRegisterOffset(vs1)+16);
-  EmitSSE2Op($66,CmpOpcode,0,1);
-  HostMask2:=ClaimHostIntRegister;
-  if vsew<=1 then begin
-   if vsew=1 then begin
-    EmitSSE2Op($66,$63,0,0);
-   end;
-   EmitSSE2Op($66,$d7,HostMask2,0);
-   if vsew=1 then begin
-    EmitNativeAndi(HostMask2,HostMask2,$ff);
-   end;
-  end else begin
-   EmitSSE2Op(-1,$50,HostMask2,0);
-  end;
-  // Combine: HostMask = HostMask | (HostMask2 << half_elements)
-  // SHL HostMask2, half_elements
-  EmitNativeSlli(HostMask2,HostMask2,VLEN div (SEW*2));
-  Emit2RegOp(X86_OR,HostMask,HostMask2,false);
-  FreeHostIntRegister(HostMask2);
-{$endif}
  end;
 
  // For vmsne: invert the mask
@@ -68940,7 +69192,7 @@ begin
   exit;
  end;
 
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -68962,15 +69214,11 @@ begin
 
  // === Copy vs1 to vd ===
  if fHasAVX2 then begin
-  EmitVEXMemOp(2,{$ifdef VLEN128}false{$else}true{$endif},false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs1),0);
-  EmitVEXMemOp(2,{$ifdef VLEN128}false{$else}true{$endif},false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
+  EmitVEXMemOp(2,fHasAVX2,false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs1),0);
+  EmitVEXMemOp(2,fHasAVX2,false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
  end else begin
   EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs1));
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs1)+16);
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(-1);
@@ -69056,7 +69304,7 @@ begin
   exit;
  end;
 
- if (VL_val*(SEW shr 3))<>VLENB then begin
+ if (VL_val*(SEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -69067,7 +69315,7 @@ begin
   result:=false;
   exit;
  end;
- if ShiftBytes>=VLENB then begin
+ if ShiftBytes>=fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -69092,17 +69340,6 @@ begin
  EmitVectorVLCheck(VL_val);
  EmitVectorVTypeCheck(fHART.fState.CSR.fData[TCSR.TAddress.VTYPE]);
 
-{$ifdef VLEN128}
- // VLEN=128: PSRLDQ xmm0, ShiftBytes
- EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2));
- // PSRLDQ xmm0, imm8: 66 0F 73 /3 ib
- EmitByte($66);
- EmitByte($0f);
- EmitByte($73);
- EmitModRM(3,3,0);
- EmitByte(ShiftBytes);
- EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$else}
  if fHasAVX2 then begin
   // Load vs2 → ymm0
   EmitVEXMemOp(2,true,false,1,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2),0);
@@ -69133,51 +69370,16 @@ begin
   end;
   EmitVEXMemOp(2,true,false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
  end else begin
-  // SSE2 fallback for VLEN=256: load both halves, shift across
+  // VLEN=128: PSRLDQ xmm0, ShiftBytes
   EmitSSE2MemOp($f3,$6f,0,VMPtrRegister,GuestVectorRegisterOffset(vs2));
-  EmitSSE2MemOp($f3,$6f,1,VMPtrRegister,GuestVectorRegisterOffset(vs2)+16);
-  if ShiftBytes<16 then begin
-   // new_low = PSRLDQ(low, N) | PSLLDQ(high, 16-N)
-   // Copy high → xmm2
-   EmitSSE2Op($66,$6f,2,1);
-   // PSLLDQ xmm2, 16-N
-   EmitByte($66);
-   EmitByte($0f);
-   EmitByte($73);
-   EmitModRM(3,7,2);
-   EmitByte(16-ShiftBytes);
-   // PSRLDQ xmm0, N
-   EmitByte($66);
-   EmitByte($0f);
-   EmitByte($73);
-   EmitModRM(3,3,0);
-   EmitByte(ShiftBytes);
-   // POR xmm0, xmm2
-   EmitSSE2Op($66,$eb,0,2);
-   // new_high = PSRLDQ(high, N)
-   EmitByte($66);
-   EmitByte($0f);
-   EmitByte($73);
-   EmitModRM(3,3,1);
-   EmitByte(ShiftBytes);
-  end else if ShiftBytes=16 then begin
-   // new_low = old high, new_high = 0
-   EmitSSE2Op($66,$6f,0,1);
-   EmitSSE2Op($66,$ef,1,1);
-  end else begin
-   // ShiftBytes 17..31: new_low = PSRLDQ(old_high, N-16), new_high = 0
-   EmitSSE2Op($66,$6f,0,1);
-   EmitByte($66);
-   EmitByte($0f);
-   EmitByte($73);
-   EmitModRM(3,3,0);
-   EmitByte(ShiftBytes-16);
-   EmitSSE2Op($66,$ef,1,1);
-  end;
+  // PSRLDQ xmm0, imm8: 66 0F 73 /3 ib
+  EmitByte($66);
+  EmitByte($0f);
+  EmitByte($73);
+  EmitModRM(3,3,0);
+  EmitByte(ShiftBytes);
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-  EmitSSE2MemOp($f3,$7f,1,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
  end;
-{$endif}
 
  EmitVectorClearVStart(-1);
 
@@ -69298,7 +69500,7 @@ begin
   exit;
  end;
 
- if (VL_val*(EEW shr 3))<>VLENB then begin
+ if (VL_val*(EEW shr 3))<>fJITVLENB then begin
   result:=false;
   exit;
  end;
@@ -69321,13 +69523,13 @@ begin
  HostAddr:=ClaimHostIntRegister;
  EmitDataTLBLookup(HostAddr,RS1,0,TLB_R,1);
 
- // === Page-crossing check: if (addr & $fff) + VLENB > $1000, bailout ===
+ // === Page-crossing check: if (addr & $fff) + fJITVLENB > $1000, bailout ===
  // For fault-only-first: bail to interpreter which handles partial loads correctly
  HostTmp:=ClaimHostIntRegister;
  EmitMOVRegReg(HostTmp,HostAddr,true);
  EmitNativeAndi(HostTmp,HostTmp,$fff);
  HostCmp:=ClaimHostIntRegister;
- EmitNativeSetReg32s(HostCmp,$1000-VLENB+1);
+ EmitNativeSetReg32s(HostCmp,($1000-fJITVLENB)+1);
  Emit2RegOp(X86_CMP,HostTmp,HostCmp,false);
  FreeHostIntRegister(HostCmp);
  EmitJccRel32(CC_B,0);
@@ -69338,20 +69540,11 @@ begin
 
  // === Load from host memory, store to vector register ===
  if fHasAVX2 then begin
-{$ifdef VLEN128}
-  EmitVEXMemOp(2,false,false,1,$6f,0,HostAddr,0,0);
-  EmitVEXMemOp(2,false,false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
-{$else}
   EmitVEXMemOp(2,true,false,1,$6f,0,HostAddr,0,0);
   EmitVEXMemOp(2,true,false,1,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd),0);
-{$endif}
  end else begin
   EmitSSE2MemOp($f3,$6f,0,HostAddr,0);
   EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd));
-{$ifndef VLEN128}
-  EmitSSE2MemOp($f3,$6f,0,HostAddr,16);
-  EmitSSE2MemOp($f3,$7f,0,VMPtrRegister,GuestVectorRegisterOffset(vd)+16);
-{$endif}
  end;
 
  EmitVectorClearVStart(HostAddr);
@@ -69363,6 +69556,7 @@ begin
 end;
 
 {$endif}
+
 
 {$elseif defined(PasRISCVJustInTimeCompilerTargetAArch64)}
 
@@ -69455,6 +69649,13 @@ end;
 
 {$ifdef PasRISCVJustInTimeCompilerFPU}
 function TPasRISCV.THART.TJustInTimeCompilerAArch64.DefaultFPURegisterMask:TPasRISCVUInt32;
+begin
+ result:=0;
+end;
+{$endif}
+
+{$ifdef PasRISCVJustInTimeCompilerVector}
+function TPasRISCV.THART.TJustInTimeCompilerAArch64.DefaultVectorRegisterMask:TPasRISCVUInt32;
 begin
  result:=0;
 end;
@@ -69557,6 +69758,13 @@ begin
 end;
 {$endif}
 
+{$ifdef PasRISCVJustInTimeCompilerVector}
+function TPasRISCV.THART.TJustInTimeCompilerRISCV64.DefaultVectorRegisterMask:TPasRISCVUInt32;
+begin
+ result:=0;
+end;
+{$endif}
+
 {$ifend}
 
 {$endif}
@@ -69612,6 +69820,9 @@ begin
 {$endif}
 
  fVector:=fMachine.fVector;
+
+ fVLEN:=fMachine.fVLEN;
+ fVLENB:=fMachine.fVLENB;
 
  fPHandle:=fMachine.AllocatePHandle;
 
@@ -70333,10 +70544,10 @@ begin
  end;
 
  // Root page table from hgatp.PPN
- PageTable:=(HGATP and $00000fffffffffff) shl TMMU.PAGE_SHIFT; // PPN field (44 bits)
+ PageTable:=(HGATP and $00000fffffffffff) shl PAGE_SHIFT; // PPN field (44 bits)
 
  // G-stage first level has 2 extra bits (16 KiB root page table)
- BitOffset:=(Levels*TMMU.VPN_BITS)+(TMMU.PAGE_SHIFT-TMMU.VPN_BITS);
+ BitOffset:=(Levels*TMMU.VPN_BITS)+(PAGE_SHIFT-TMMU.VPN_BITS);
 
  for Index:=0 to Levels-1 do begin
 
@@ -70489,7 +70700,7 @@ begin
     result:=0;
     exit;
    end;
-   PageTable:=((PageTableEntry shr 10) shl TMMU.PAGE_SHIFT) and TMMU.PHYSICAL_MASK;
+   PageTable:=((PageTableEntry shr 10) shl PAGE_SHIFT) and TMMU.PHYSICAL_MASK;
    dec(BitOffset,TMMU.VPN_BITS);
   end;
 
@@ -70910,7 +71121,7 @@ begin
    end;
 
    PageTable:=fRootPageTable;
-   BitOffset:=(Levels*TMMU.VPN_BITS)+(TMMU.PAGE_SHIFT-TMMU.VPN_BITS);
+   BitOffset:=(Levels*TMMU.VPN_BITS)+(PAGE_SHIFT-TMMU.VPN_BITS);
 
    // Check for canonical virtual address
    if aVirtualAddress<>TPasRISCVUInt64(SignExtend(aVirtualAddress,BitOffset+TMMU.VPN_BITS)) then begin
@@ -71067,7 +71278,7 @@ begin
          NAPOTMask:=(TPasRISCVUInt64(1) shl NAPOTBits)-1;
 
          PhysicalAddress:=(((PPN and not NAPOTMask) or
-                            ((aVirtualAddress shr TMMU.PAGE_SHIFT) and (NAPOTMask or ((TPasRISCVUInt64(1) shl (BitOffset-(TMMU.PAGE_VPN_DIFF+TMMU.VPN_BITS)))-1)))) shl TMMU.PAGE_SHIFT) or
+                            ((aVirtualAddress shr PAGE_SHIFT) and (NAPOTMask or ((TPasRISCVUInt64(1) shl (BitOffset-(TMMU.PAGE_VPN_DIFF+TMMU.VPN_BITS)))-1)))) shl PAGE_SHIFT) or
                            (aVirtualAddress and PAGE_MASK);
 
         end else begin
@@ -71106,7 +71317,7 @@ begin
         result:=0;
         exit;
        end;
-       PageTable:=((PageTableEntry shr 10) shl TMMU.PAGE_SHIFT) and TMMU.PHYSICAL_MASK;
+       PageTable:=((PageTableEntry shr 10) shl PAGE_SHIFT) and TMMU.PHYSICAL_MASK;
        dec(BitOffset,TMMU.VPN_BITS);
       end;
 
@@ -74230,7 +74441,7 @@ begin
  end;
  rd:=TRegister((aInstruction shr 7) and $1f);
  CSRValue:=fState.CSR.fData[TCSR.TAddress.VSTART];
- OperationValue:=CSROperation(aOperation,CSRValue,aRHS) and TPasRISCVUInt64(VLEN-1);
+ OperationValue:=CSROperation(aOperation,CSRValue,aRHS) and TPasRISCVUInt64(fVLEN-1);
  fState.CSR.fData[TCSR.TAddress.VSTART]:=OperationValue;
  {$ifndef ExplicitEnforceZeroRegister}if rd<>TRegister.Zero then{$endif}begin
   fState.Registers[rd]:=CSRValue;
@@ -74340,7 +74551,7 @@ begin
   exit;
  end;
  rd:=TRegister((aInstruction shr 7) and $1f);
- CSRValue:=VLENB;
+ CSRValue:=fVLENB;
  if (aOperation=TCSROperation.Swap) or ((aOperation in [TCSROperation.SetBits,TCSROperation.ClearBits]) and (aRHS<>0)) then begin
   SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
  end else begin
@@ -74403,7 +74614,7 @@ begin
  if (LMUL8<=0) or (SEW=0) then begin
   result:=0;
  end else begin
-  result:=((VLEN div SEW)*TPasRISCVUInt32(LMUL8)) shr 3;
+  result:=((fVLEN div SEW)*TPasRISCVUInt32(LMUL8)) shr 3;
  end;
 end;
 
@@ -74412,8 +74623,8 @@ var ByteOffset:TPasRISCVUInt32;
     RegIndex,RegOffset:TPasRISCVUInt32;
 begin
  ByteOffset:=aIndex*(aSEW shr 3);
- RegIndex:=aVReg+(ByteOffset div VLENB);
- RegOffset:=ByteOffset and (VLENB-1);
+ RegIndex:=aVReg+(ByteOffset div fVLENB);
+ RegOffset:=ByteOffset and (fVLENB-1);
  if RegIndex>31 then begin
   result:=0;
   exit;
@@ -74442,8 +74653,8 @@ var ByteOffset:TPasRISCVUInt32;
     RegIndex,RegOffset:TPasRISCVUInt32;
 begin
  ByteOffset:=aIndex*(aSEW shr 3);
- RegIndex:=aVReg+(ByteOffset div VLENB);
- RegOffset:=ByteOffset and (VLENB-1);
+ RegIndex:=aVReg+(ByteOffset div fVLENB);
+ RegOffset:=ByteOffset and (fVLENB-1);
  if RegIndex>31 then begin
   exit;
  end;
@@ -74948,14 +75159,14 @@ begin
 
       $08:begin
        // vlNre8/16/32/64.v, whole register load
-       // NumFields+1 registers, evl = (NumFields+1)*VLEN/EEW
+       // NumFields+1 registers, evl = (NumFields+1)*fVLEN/EEW
        // NREG must be 1, 2, 4, or 8 and vd must be aligned; vm must be 1
        if (not Unmasked) or (not ((NumFields+1) in [1,2,4,8])) or ((vd and NumFields)<>0) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
        end;
-       EVL:=(NumFields+1)*(VLEN div EEW);
+       EVL:=(NumFields+1)*(fVLEN div EEW);
        Address:=fState.Registers[rs1];
        if fState.CSR.fData[TCSR.TAddress.VSTART]<EVL then begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
@@ -75304,7 +75515,7 @@ begin
         result:=4;
         exit;
        end;
-       EVL:=(NumFields+1)*(VLEN div EEW);
+       EVL:=(NumFields+1)*(fVLEN div EEW);
        Address:=fState.Registers[rs1];
        if fState.CSR.fData[TCSR.TAddress.VSTART]<EVL then begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
@@ -75614,9 +75825,9 @@ begin
      end;
 
      // Check LMUL encoding valid and VLMAX >= 1
-     // VLMAX = (VLEN/SEW) * (LMUL8/8) = VLEN*LMUL8 / (SEW*8)
-     // So VLMAX >= 1 requires VLEN*LMUL8 >= SEW*8
-     if (LMUL8=0) or (TPasRISCVUInt64(VLEN)*TPasRISCVUInt64(LMUL8)<TPasRISCVUInt64(SEW)*8) then begin
+     // VLMAX = (fVLEN/SEW) * (LMUL8/8) = fVLEN*LMUL8 / (SEW*8)
+     // So VLMAX >= 1 requires fVLEN*LMUL8 >= SEW*8
+     if (LMUL8=0) or (TPasRISCVUInt64(fVLEN)*TPasRISCVUInt64(LMUL8)<TPasRISCVUInt64(SEW)*8) then begin
       fState.CSR.fData[TCSR.TAddress.VTYPE]:=TPasRISCVUInt64(1) shl 63;
       fState.CSR.fData[TCSR.TAddress.VL]:=0;
       {$ifndef ExplicitEnforceZeroRegister}if rd<>TRegister.Zero then{$endif}begin
@@ -75628,8 +75839,8 @@ begin
       exit;
      end;
 
-     // Compute VLMAX = (VLEN/SEW) * LMUL
-     VLMAX:=((VLEN div SEW)*LMUL8) shr 3;
+     // Compute VLMAX = (fVLEN/SEW) * LMUL
+     VLMAX:=((fVLEN div SEW)*LMUL8) shr 3;
 
      // Compute new vl from AVL
      if AVL<=VLMAX then begin
@@ -75683,7 +75894,7 @@ begin
        end;
       end;
       if (OldLMUL8>0) and (OldSEW>0) then begin
-       OldVLMAX:=((VLEN div OldSEW)*OldLMUL8) shr 3;
+       OldVLMAX:=((fVLEN div OldSEW)*OldLMUL8) shr 3;
       end else begin
        OldVLMAX:=0;
       end;
@@ -75981,7 +76192,7 @@ begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
          if Unmasked or VectorGetMaskBit(Index) then begin
           SubIndex:=VectorGetElement(vs1,Index,SEW);
-          VLMAX:=((VLEN div SEW)*VectorGetLMUL) shr 3;
+          VLMAX:=((fVLEN div SEW)*VectorGetLMUL) shr 3;
           if SubIndex>=VLMAX then begin
            VectorSetElement(vd,Index,SEW,0);
           end else begin
@@ -76034,7 +76245,7 @@ begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
          if Unmasked or VectorGetMaskBit(Index) then begin
           SubIndex:=VectorGetElement(vs1,Index,16);
-          VLMAX:=((VLEN div SEW)*VectorGetLMUL) shr 3;
+          VLMAX:=((fVLEN div SEW)*VectorGetLMUL) shr 3;
           if SubIndex<VLMAX then begin
            VectorSetElement(vd,Index,SEW,VectorGetElement(vs2,SubIndex,SEW));
           end else begin
@@ -82438,7 +82649,7 @@ begin
        if fState.CSR.fData[TCSR.TAddress.VSTART]<EVL then begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
          if Unmasked or VectorGetMaskBit(Index) then begin
-          VLMAX:=((VLEN div SEW)*VectorGetLMUL) shr 3;
+          VLMAX:=((fVLEN div SEW)*VectorGetLMUL) shr 3;
           if SubIndex>=VLMAX then begin
            VectorSetElement(vd,Index,SEW,0);
           end else begin
@@ -82484,7 +82695,7 @@ begin
        if fState.CSR.fData[TCSR.TAddress.VSTART]<EVL then begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
          if Unmasked or VectorGetMaskBit(Index) then begin
-          VLMAX:=((VLEN div SEW)*VectorGetLMUL) shr 3;
+          VLMAX:=((fVLEN div SEW)*VectorGetLMUL) shr 3;
           if (Index+SubIndex)<VLMAX then begin
            VectorSetElement(vd,Index,SEW,VectorGetElement(vs2,Index+SubIndex,SEW));
           end else begin
@@ -82824,8 +83035,8 @@ begin
          result:=4;
          exit;
         end;
-        for Index:=TPasRISCVUInt32(fState.CSR.fData[TCSR.TAddress.VSTART]) to TPasRISCVUInt32(NumFields*VLENB)-1 do begin
-         fState.VectorRegisters[TVectorRegister((vd+(Index div VLENB)) and 31)][Index and (VLENB-1)]:=fState.VectorRegisters[TVectorRegister((vs2+(Index div VLENB)) and 31)][Index and (VLENB-1)];
+        for Index:=TPasRISCVUInt32(fState.CSR.fData[TCSR.TAddress.VSTART]) to TPasRISCVUInt32(NumFields*fVLENB)-1 do begin
+         fState.VectorRegisters[TVectorRegister((vd+(Index div fVLENB)) and 31)][Index and (fVLENB-1)]:=fState.VectorRegisters[TVectorRegister((vs2+(Index div fVLENB)) and 31)][Index and (fVLENB-1)];
         end;
        end else begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
@@ -83286,7 +83497,7 @@ begin
        if fState.CSR.fData[TCSR.TAddress.VSTART]<EVL then begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
          if Unmasked or VectorGetMaskBit(Index) then begin
-          VLMAX:=((VLEN div SEW)*VectorGetLMUL) shr 3;
+          VLMAX:=((fVLEN div SEW)*VectorGetLMUL) shr 3;
           if SubIndex>=VLMAX then begin
            VectorSetElement(vd,Index,SEW,0);
           end else begin
@@ -83332,7 +83543,7 @@ begin
        if fState.CSR.fData[TCSR.TAddress.VSTART]<EVL then begin
         for Index:=fState.CSR.fData[TCSR.TAddress.VSTART] to EVL-1 do begin
          if Unmasked or VectorGetMaskBit(Index) then begin
-          VLMAX:=((VLEN div SEW)*VectorGetLMUL) shr 3;
+          VLMAX:=((fVLEN div SEW)*VectorGetLMUL) shr 3;
           if (Index+SubIndex)<VLMAX then begin
            VectorSetElement(vd,Index,SEW,VectorGetElement(vs2,Index+SubIndex,SEW));
           end else begin
@@ -87339,8 +87550,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=256 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(256*8) then begin
+     // LMUL*fVLEN >= EGW=256 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(256*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87404,8 +87615,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=128 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+     // LMUL*fVLEN >= EGW=128 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87446,8 +87657,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=128 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+     // LMUL*fVLEN >= EGW=128 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87491,8 +87702,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=128 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+     // LMUL*fVLEN >= EGW=128 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87590,8 +87801,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=128 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+     // LMUL*fVLEN >= EGW=128 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87603,13 +87814,13 @@ begin
       exit;
      end;
      // Overlap constraint: vd and vs2 register groups must not overlap for .vs forms
-     // vs2 scalar EG is 128 bits = ceil(128/VLEN) registers
+     // vs2 scalar EG is 128 bits = ceil(128/fVLEN) registers
      begin
       OperandValue:=LMUL8 shr 3;
       if OperandValue<1 then begin
        OperandValue:=1;
       end;
-      SubIndex:=(128+VLEN-1) div VLEN; // vs2 scalar EG register count
+      SubIndex:=(128+fVLEN-1) div fVLEN; // vs2 scalar EG register count
       if SubIndex<1 then begin
        SubIndex:=1;
       end;
@@ -87718,8 +87929,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=128 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+     // LMUL*fVLEN >= EGW=128 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87763,8 +87974,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=256 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(256*8) then begin
+     // LMUL*fVLEN >= EGW=256 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(256*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87829,8 +88040,8 @@ begin
       result:=4;
       exit;
      end;
-     // LMUL*VLEN >= EGW=128 constraint
-     if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+     // LMUL*fVLEN >= EGW=128 constraint
+     if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
       SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
       result:=4;
       exit;
@@ -87899,8 +88110,8 @@ begin
      case SEW of
       32:begin
        // SHA-256 message schedule, EGW=128
-       // LMUL*VLEN >= EGW=128 constraint
-       if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+       // LMUL*fVLEN >= EGW=128 constraint
+       if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
@@ -87935,8 +88146,8 @@ begin
       end;
       64:begin
        // SHA-512 message schedule, EGW=256
-       // LMUL*VLEN >= EGW=256 constraint
-       if (TPasRISCVInt64(LMUL8)*VLEN)<(256*8) then begin
+       // LMUL*fVLEN >= EGW=256 constraint
+       if (TPasRISCVInt64(LMUL8)*fVLEN)<(256*8) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
@@ -88006,8 +88217,8 @@ begin
      end;
      case SEW of
       32:begin
-       // LMUL*VLEN >= EGW=128 constraint
-       if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+       // LMUL*fVLEN >= EGW=128 constraint
+       if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
@@ -88043,8 +88254,8 @@ begin
        exit;
       end;
       64:begin
-       // LMUL*VLEN >= EGW=256 constraint
-       if (TPasRISCVInt64(LMUL8)*VLEN)<(256*8) then begin
+       // LMUL*fVLEN >= EGW=256 constraint
+       if (TPasRISCVInt64(LMUL8)*fVLEN)<(256*8) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
@@ -88117,8 +88328,8 @@ begin
      end;
      case SEW of
       32:begin
-       // LMUL*VLEN >= EGW=128 constraint
-       if (TPasRISCVInt64(LMUL8)*VLEN)<(128*8) then begin
+       // LMUL*fVLEN >= EGW=128 constraint
+       if (TPasRISCVInt64(LMUL8)*fVLEN)<(128*8) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
@@ -88154,8 +88365,8 @@ begin
        exit;
       end;
       64:begin
-       // LMUL*VLEN >= EGW=256 constraint
-       if (TPasRISCVInt64(LMUL8)*VLEN)<(256*8) then begin
+       // LMUL*fVLEN >= EGW=256 constraint
+       if (TPasRISCVInt64(LMUL8)*fVLEN)<(256*8) then begin
         SetException(TExceptionValue.IllegalInstruction,aInstruction,fState.PC);
         result:=4;
         exit;
@@ -104305,6 +104516,17 @@ begin
  fLRSCMaximumCycles:=fConfiguration.fLRSCMaximumCycles;
 
  fVector:=fConfiguration.fVector;
+
+{$if defined(PasRISCVJustInTimeCompiler) and defined(PasRISCVJustInTimeCompilerVector) and defined(PasRISCVJustInTimeCompilerTargetX8664)}
+ if (CPUFeatures and CPUFeatures_X86_AVX2_Mask)<>0 then begin
+  fVLEN:=256;
+ end else begin
+  fVLEN:=128;
+ end;
+{$else}
+ fVLEN:={$ifdef VLEN128}128{$else}256{$endif};
+{$ifend}
+ fVLENB:=fVLEN div 8;
 
 {$ifdef PasRISCVJustInTimeCompiler}
  fJITEnabled:=fConfiguration.fJITEnabled;
