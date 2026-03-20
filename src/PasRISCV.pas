@@ -11702,7 +11702,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
 {$if defined(PasRISCVInterruptWakeupHardening)}
        fWakeGeneration:TPasRISCVUInt64;
 {$ifend}
-{$ifend}
+{$endif}
 
        fEventThread:TEventThread;
 
