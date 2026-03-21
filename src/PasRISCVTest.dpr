@@ -131,7 +131,17 @@ begin
 
   Configuration.MemorySize:=TPasRISCVUInt64(2048) shl 20; // 2GB
 
-  if ParamStr(1)='benchmark' then begin
+  if ParamStr(1)='testvectorjit' then begin
+    Configuration.LoadBIOSFromFile(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))+'fw_jump.bin');
+    Configuration.LoadKernelFromFile(IncludeTrailingPathDelimiter(IncludeTrailingPathDelimiter(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))+'..')+'benchmarks')+'vectest.bin');
+    Configuration.BootArguments:='root=/dev/mem rw earlyprintk console=$LINUXUART$ earlycon=sbi';
+   end else if ParamStr(1)='testalpine' then begin
+    Configuration.CountHARTs:=4;
+    Configuration.NVMeEnabled:=true;
+    Configuration.LoadBIOSFromFile(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))+'fw_payload.bin');
+    Configuration.DisplayMode:=TPasRISCV.TDisplayMode.SimpleFB;
+    Configuration.SoundMode:=TPasRISCV.TSoundMode.CMI8738;
+   end else if ParamStr(1)='benchmark' then begin
    Configuration.LoadBIOSFromFile(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))+'fw_jump.bin');
    Configuration.LoadKernelFromFile(IncludeTrailingPathDelimiter(IncludeTrailingPathDelimiter(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))+'..')+'benchmarks')+'bench.bin');
    Configuration.BootArguments:='root=/dev/mem rw earlyprintk console=$LINUXUART$ earlycon=sbi';
@@ -170,6 +180,10 @@ begin
 
     if ParamStr(1)='image' then begin
      Machine.VirtIOBlockDevice.AttachStream(TFileStream.Create(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))+'image.img',fmOpenReadWrite{or fmShareDenyNone}));
+    end;
+
+    if ParamStr(1)='testalpine' then begin
+     Machine.NVMeDevice.AttachStream(TFileStream.Create('/home/bero/Projects/GitHub/pasvulkan/projects/pasriscvemu/assets/riscv/alpine.img',fmOpenReadWrite));
     end;
 
     Machine.OnReboot:=MachineInstance.OnReboot;
