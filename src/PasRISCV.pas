@@ -67639,7 +67639,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
@@ -67839,7 +67839,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
@@ -68434,7 +68434,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1));
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
@@ -68742,7 +68742,7 @@ begin
 
  // === Return broadcast temp to vector register mask ===
 {$ifndef PasRISCVJustInTimeCompilerVectorScratch}
- fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl HostBroadcast);
+ FreeHostVectorRegister(HostBroadcast);
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVectorScratch}
@@ -69010,7 +69010,7 @@ begin
 
  // === Return broadcast temp to vector register mask ===
 {$ifndef PasRISCVJustInTimeCompilerVectorScratch}
- fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl HostBroadcast);
+ FreeHostVectorRegister(HostBroadcast);
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVectorScratch}
@@ -69072,7 +69072,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
@@ -69292,7 +69292,7 @@ begin
 
  // === Return temp vector register ===
 {$ifndef PasRISCVJustInTimeCompilerVectorScratch}
- fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl HostTemp);
+ FreeHostVectorRegister(HostTemp);
 {$endif}
 
  // For vmsne: invert the mask
@@ -69401,7 +69401,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
@@ -69538,7 +69538,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2) or (TPasRISCVUInt32(1) shl 3));
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
@@ -69597,7 +69597,7 @@ begin
   end;
   // Return temp
 {$ifndef PasRISCVJustInTimeCompilerVectorScratch}
-  fHostVectorRegisterMask:=fHostVectorRegisterMask or (TPasRISCVUInt32(1) shl HostTemp);
+  FreeHostVectorRegister(HostTemp);
 {$endif}
  end else begin
   // SSE VLEN=128: copy vs2=>vd, then PSRLDQ in-place
@@ -69760,7 +69760,7 @@ begin
 {$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
  FreeAllHostFPURegisters;
 {$else}
- FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
+ FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
