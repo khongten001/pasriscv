@@ -1,7 +1,7 @@
 ﻿(******************************************************************************
  *                                  PasRISCV                                  *
  ******************************************************************************
- *                        Version 2026-03-23-00-15-0000                       *
+ *                        Version 2026-03-23-00-42-0000                       *
  ******************************************************************************
  *                                zlib license                                *
  *============================================================================*
@@ -8986,6 +8986,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      procedure FreeHostIntRegister(const aHostRegister:TPasRISCVUInt8); inline;
                      procedure FreeGuestIntRegister(const aGuestRegister:TRegister);
                      procedure SaveAllDirtyIntRegisters;
+                     procedure StoreAllDirtyIntRegisters;
                      procedure ReloadAllMappedIntRegisters;
                      procedure FreeAllHostIntRegisters;
                      procedure FreeHostIntRegisters(const aHostRegisterMask:TPasRISCVUInt32);
@@ -8995,6 +8996,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      procedure FreeHostFPURegister(const aHostRegister:TPasRISCVUInt8); inline;
                      procedure FreeGuestFPURegister(const aGuestRegister:TFPURegister);
                      procedure SaveAllDirtyFPURegisters;
+                     procedure StoreAllDirtyFPURegisters;
                      procedure ReloadAllMappedFPURegisters;
                      procedure FreeAllHostFPURegisters;
                      procedure FreeHostFloatRegisters(const aHostRegisterMask:TPasRISCVUInt32);
@@ -9007,6 +9009,7 @@ type PPPasRISCVInt8=^PPasRISCVInt8;
                      procedure FreeHostVectorRegister(const aHostRegister:TPasRISCVUInt8); inline;
                      procedure FreeGuestVectorRegister(const aGuestVReg:TPasRISCVUInt32);
                      procedure SaveAllDirtyVectorRegisters;
+                     procedure StoreAllDirtyVectorRegisters;
                      procedure ReloadAllMappedVectorRegisters;
                      procedure FreeAllHostVectorRegisters;
                      procedure EvictVectorForFPU(const aHostRegisterMask:TPasRISCVUInt32);
@@ -52392,6 +52395,19 @@ begin
  end;
 end;
 
+procedure TPasRISCV.THART.TJustInTimeCompiler.StoreAllDirtyIntRegisters;
+var GuestReg:TRegister;
+begin
+ for GuestReg:=TRegister.x0 to TRegister.x31 do begin
+  if (fHostIntRegisterInfos[GuestReg].HostRegister<>REG_ILL) and
+     ((fHostIntRegisterInfos[GuestReg].Flags and REG_DIRTY)<>0) then begin
+   if GuestReg<>TRegister.x0 then begin
+    EmitNativeStore(fHostIntRegisterInfos[GuestReg].HostRegister,VMPtrRegister,GuestIntRegisterOffset(GuestReg),true);
+   end;
+  end;
+ end;
+end;
+
 procedure TPasRISCV.THART.TJustInTimeCompiler.ReloadAllMappedIntRegisters;
 var GuestReg:TRegister;
 begin
@@ -52562,6 +52578,17 @@ begin
  end;
 end;
 
+procedure TPasRISCV.THART.TJustInTimeCompiler.StoreAllDirtyFPURegisters;
+var FPURegister:TFPURegister;
+begin
+ for FPURegister:=TFPURegister.f0 to TFPURegister.f31 do begin
+  if (fHostFPURegisterInfos[FPURegister].HostRegister<>REG_ILL) and
+     ((fHostFPURegisterInfos[FPURegister].Flags and REG_DIRTY)<>0) then begin
+   EmitFPUStore(fHostFPURegisterInfos[FPURegister].HostRegister,VMPtrRegister,GuestFPURegisterOffset(FPURegister),true);
+  end;
+ end;
+end;
+
 procedure TPasRISCV.THART.TJustInTimeCompiler.ReloadAllMappedFPURegisters;
 var FPURegister:TFPURegister;
 begin
@@ -52723,6 +52750,17 @@ begin
      ((fHostVectorRegisterInfos[VReg].Flags and REG_DIRTY)<>0) then begin
    EmitVectorStore(fHostVectorRegisterInfos[VReg].HostRegister,VMPtrRegister,GuestVectorRegisterOffset(VReg));
    fHostVectorRegisterInfos[VReg].Flags:=fHostVectorRegisterInfos[VReg].Flags and not REG_DIRTY;
+  end;
+ end;
+end;
+
+procedure TPasRISCV.THART.TJustInTimeCompiler.StoreAllDirtyVectorRegisters;
+var VReg:TPasRISCVUInt32;
+begin
+ for VReg:=0 to 31 do begin
+  if (fHostVectorRegisterInfos[VReg].HostRegister<>REG_ILL) and
+     ((fHostVectorRegisterInfos[VReg].Flags and REG_DIRTY)<>0) then begin
+   EmitVectorStore(fHostVectorRegisterInfos[VReg].HostRegister,VMPtrRegister,GuestVectorRegisterOffset(VReg));
   end;
  end;
 end;
@@ -60780,7 +60818,6 @@ var HostVirtualAddress,HostVPN,HostIndex:TPasRISCVUInt8;
     SavedIntRegInfos:TIntRegisterInfos;
 {$ifdef PasRISCVJustInTimeCompilerFPU}
     SavedFPURegInfos:TFPURegisterInfos;
-    FPURegister:TFPURegister;
 {$endif}
 {$ifdef PasRISCVJustInTimeCompilerVector}
     SavedVectorRegisterInfos:TVectorRegisterInfos;
@@ -60865,17 +60902,12 @@ begin
 
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  // Save dirty mapped FPU regs to TState before helper call (XMMs are caller-saved)
- for FPURegister:=Low(TFPURegister) to High(TFPURegister) do begin
-  if (fHostFPURegisterInfos[FPURegister].HostRegister<>REG_ILL) and
-     ((fHostFPURegisterInfos[FPURegister].Flags and REG_DIRTY)<>0) then begin
-   EmitFPUStore(fHostFPURegisterInfos[FPURegister].HostRegister,VMPtrRegister,GuestFPURegisterOffset(FPURegister),true);
-  end;
- end;
+ StoreAllDirtyFPURegisters;
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVector}
  // Save dirty mapped vector regs to TState before helper call (XMMs/YMMs are caller-saved)
- SaveAllDirtyVectorRegisters;
+ StoreAllDirtyVectorRegisters;
 {$endif}
 
  // Push all caller-saved registers to preserve runtime state across call
@@ -60958,11 +60990,7 @@ begin
 
 {$ifdef PasRISCVJustInTimeCompilerFPU}
  // Reload all mapped FPU regs from TState (XMMs were clobbered by helper call)
- for FPURegister:=Low(TFPURegister) to High(TFPURegister) do begin
-  if fHostFPURegisterInfos[FPURegister].HostRegister<>REG_ILL then begin
-   EmitFPULoad(fHostFPURegisterInfos[FPURegister].HostRegister,VMPtrRegister,GuestFPURegisterOffset(FPURegister),true);
-  end;
- end;
+ ReloadAllMappedFPURegisters;
 {$endif}
 
 {$ifdef PasRISCVJustInTimeCompilerVector}
