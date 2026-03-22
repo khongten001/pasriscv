@@ -1,7 +1,7 @@
 ﻿(******************************************************************************
  *                                  PasRISCV                                  *
  ******************************************************************************
- *                        Version 2026-03-11-06-14-0000                       *
+ *                        Version 2026-03-23-00-15-0000                       *
  ******************************************************************************
  *                                zlib license                                *
  *============================================================================*
@@ -421,8 +421,9 @@ unit PasRISCV;
   {$define PasRISCVJustInTimeCompilerVector}
   {$ifdef PasRISCVJustInTimeCompilerVector}
    {$define PasRISCVJustInTimeCompilerVectorScratch}
-   {$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-    {$define PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+   {$define PasRISCVJustInTimeCompilerVectorFreeRegisters}
+   {$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
+    {$define PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
    {$endif}
    {-$define PasRISCVJustInTimeCompilerVectorDebug}
   {$endif}
@@ -67634,9 +67635,9 @@ begin
 
  EmitVectorEnabledCheck;
 
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
@@ -67834,9 +67835,9 @@ begin
 
  EmitVectorEnabledCheck;
 
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
@@ -67983,9 +67984,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
@@ -68184,9 +68185,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
@@ -68429,9 +68430,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1));
@@ -68640,9 +68641,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
@@ -68906,9 +68907,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
@@ -69067,9 +69068,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
@@ -69223,9 +69224,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2));
@@ -69396,9 +69397,9 @@ begin
 
  EmitVectorEnabledCheck;
 
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
@@ -69532,16 +69533,17 @@ begin
 
  EmitVectorEnabledCheck;
 
- // === Runtime checks ===
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters((TPasRISCVUInt32(1) shl 0) or (TPasRISCVUInt32(1) shl 1) or (TPasRISCVUInt32(1) shl 2) or (TPasRISCVUInt32(1) shl 3));
 {$endif}
  FreeAllHostVectorRegisters;
 {$endif}
+
+ // === Runtime checks ===
  HostTmp:=ClaimHostIntRegister;
  EmitNativeLoad(HostTmp,VMPtrRegister,GuestCSRDataOffset(TPasRISCVUInt32(TCSR.TAddress.VSTART)),true);
  EmitTEST(HostTmp,HostTmp,true);
@@ -69755,9 +69757,9 @@ begin
 
  EmitVectorEnabledCheck;
 
-{$ifdef PasRISCVJustInTimeCompilerVectorScratch}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeRegisters}
  FreeAllHostIntRegisters;
-{$ifdef PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
+{$ifdef PasRISCVJustInTimeCompilerVectorFreeAllFPUVectorRegisters}
  FreeAllHostFPURegisters;
 {$else}
  FreeHostFloatRegisters(TPasRISCVUInt32(1) shl 0);
