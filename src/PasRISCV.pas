@@ -420,7 +420,7 @@ unit PasRISCV;
   {$define PasRISCVJustInTimeCompilerUseRealFMA}
   {$define PasRISCVJustInTimeCompilerVector}
   {$ifdef PasRISCVJustInTimeCompilerVector}
-   {-$define PasRISCVJustInTimeCompilerVectorScratch}
+   {$define PasRISCVJustInTimeCompilerVectorScratch}
    {$ifdef PasRISCVJustInTimeCompilerVectorScratch}
     {$define PasRISCVJustInTimeCompilerVectorScratchFreeAllFPU}
    {$endif}
