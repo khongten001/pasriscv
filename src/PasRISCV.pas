@@ -69354,7 +69354,6 @@ var vd,vs1,vs2:TPasRISCVUInt32;
     Unmasked:Boolean;
     SEW,LMUL8,EMUL8,VL_val:TPasRISCVUInt64;
     HostVs1,HostVd:TPasRISCVUInt8;
-
 begin
  vd:=(aInstruction shr 7) and $1f;
  vs1:=(aInstruction shr 15) and $1f;
