@@ -23,6 +23,7 @@ A RISC-V RV64GCV/RVA23 emulator written in Object Pascal. It simulates processor
   - Ziccif (Instruction Fetch Coherence)
   - Ziccrse (LR/SC Forward Progress)
   - Ziccamoa (AMO on Main Memory)
+  - Ziccamoc (Cacheability on Main Memory)
   - Zicclsm (Misaligned Load/Store Support)
   - Za64rs (64-Byte Reservation Set)
   - Svadu (Hardware Updating of PTE A/D Bits) 

@@ -105863,6 +105863,7 @@ begin
   AddISAExtension('zicbop');
   AddISAExtension('zicboz');
   AddISAExtension('ziccamoa');
+  AddISAExtension('ziccamoc');
   AddISAExtension('ziccif');
   AddISAExtension('zicclsm');
   AddISAExtension('ziccrse');
