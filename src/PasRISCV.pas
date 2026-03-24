@@ -105998,7 +105998,7 @@ begin
   AddISAExtension('ssnpm');
 //AddISAExtension('sspm');
   AddISAExtension('ssstateen');
-//AddISAExtension('ssstrict');
+  AddISAExtension('ssstrict');
   AddISAExtension('sstc');
   AddISAExtension('sstvala');
   AddISAExtension('sstvecd');

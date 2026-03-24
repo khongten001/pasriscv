@@ -36,6 +36,7 @@ A RISC-V RV64GCV/RVA23 emulator written in Object Pascal. It simulates processor
   - Sscounterenw (Writable scounteren)
   - Ssu64xl (UXLEN=64)
   - Ssstateen (Supervisor-Mode State Enable)
+  - Ssstrict (No Non-Conforming Extensions)
   - Svbare (satp Bare Mode)
   - Ss1p13 (Supervisor Architecture v1.13)
   - Sm1p13 (Machine Architecture v1.13)
