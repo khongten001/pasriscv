@@ -57,6 +57,7 @@ A RISC-V RV64GCV/RVA23 emulator written in Object Pascal. It simulates processor
   - Svpbmt (Page-Based Memory Types)
   - Svinval (Fine-Grained TLB Invalidation)
   - Svnapot ("NAPOT Translation" Continuity)
+  - Svvptc (Previous Valid Translations Can Be Used)
   - Zba/Zbb/Zbc/Zbs (Bit Manipulations)
   - Zbkb/Zbkc/Zbkx (Scalar Cryptography Bit Manipulations)
   - Zknd/Zkne (AES Encryption/Decryption)

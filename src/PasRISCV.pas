@@ -106026,7 +106026,7 @@ begin
   AddISAExtension('svpbmt');
 //AddISAExtension('svrsw60t59b');
 //AddISAExtension('svukte');
-//AddISAExtension('svvptc');
+AddISAExtension('svvptc'); // Inherently satisfied: invalid PTEs are never cached in the TLB, so invalid-to-valid transitions are visible without SFENCE.VMA
 //AddISAExtension('xtheadba');
 //AddISAExtension('xtheadbb');
 //AddISAExtension('xtheadbs');
