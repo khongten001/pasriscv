@@ -46,6 +46,7 @@ A RISC-V RV64GCV/RVA23 emulator written in Object Pascal. It simulates processor
   - Ssaia (Supervisor-Level Advanced Interrupt Architecture, when AIA is enabled)
   - Supm (User-Mode Pointer Masking)
   - Ssnpm (Supervisor-Mode Pointer Masking)
+  - Sspm (Supervisor Pointer Masking Availability)
   - Sha (Augmented Hypervisor Extension)
   - Shcounterenw (Writable hcounteren)
   - Shgatpa (hgatp SvNNx4 Mode Support)

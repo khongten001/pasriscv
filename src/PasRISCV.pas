@@ -71338,28 +71338,38 @@ begin
    CPUMode:=TPasRISCV.THART.TMode(TPasRISCVUInt64((fState.CSR.fData[TCSR.TAddress.MSTATUS] shr 11) and 3));
   end;
 
-  // Pointer masking (Supm/Ssnpm)
+  // Pointer masking (Supm/Ssnpm/Sspm)
+  // When MPRV and MXR are both set, pointer masking does not apply (Zjpm spec)
   // TODO-Optimize: TLB fast-paths in Load32/Store32 etc. see the unmasked address and will
   // always miss when pointer masking is active, falling through to AddressTranslate. This is
   // performance-neutral when PMM=0, but could be optimized for PMM<>0 by masking the address
   // before the TLB lookup in the fast-paths as well.
-  case CPUMode of
-   THART.TMode.User:begin
-    PMM:=(fState.CSR.fData[TCSR.TAddress.SENVCFG] shr 32) and 3;
+  if ((MSTATUS and (TPasRISCVUInt64(1) shl THART.TCSR.TMask.TMSTATUSBit.MPRV))=0) or
+     ((MSTATUS and (TPasRISCVUInt64(1) shl THART.TCSR.TMask.TMSTATUSBit.MXR))=0) then begin
+   case CPUMode of
+    THART.TMode.User:begin
+     PMM:=(fState.CSR.fData[TCSR.TAddress.SENVCFG] shr 32) and 3;
+    end;
+    THART.TMode.Supervisor:begin
+     if fState.VirtualMode then begin
+      PMM:=(fState.CSR.fData[TCSR.TAddress.HENVCFG] shr 32) and 3;
+     end else begin
+      PMM:=(fState.CSR.fData[TCSR.TAddress.MENVCFG] shr 32) and 3;
+     end;
+    end;
+    else begin
+     PMM:=0;
+    end;
    end;
-   THART.TMode.Supervisor:begin
-    PMM:=(fState.CSR.fData[TCSR.TAddress.MENVCFG] shr 32) and 3;
-   end;
-   else begin
-    PMM:=0;
-   end;
-  end;
-  case PMM of
-   2:begin // PMLEN=7
-    aVirtualAddress:=TPasRISCVUInt64(SARInt64(TPasRISCVInt64(aVirtualAddress shl 7),7));
-   end;
-   3:begin // PMLEN=16
-    aVirtualAddress:=TPasRISCVUInt64(SARInt64(TPasRISCVInt64(aVirtualAddress shl 16),16));
+   case PMM of
+    2:begin // PMLEN=7
+     aVirtualAddress:=TPasRISCVUInt64(SARInt64(TPasRISCVInt64(aVirtualAddress shl 7),7));
+    end;
+    3:begin // PMLEN=16
+     aVirtualAddress:=TPasRISCVUInt64(SARInt64(TPasRISCVInt64(aVirtualAddress shl 16),16));
+    end;
+    else behin
+    end;
    end;
   end;
 
@@ -105996,7 +106006,7 @@ begin
   end;
 //AddISAExtension('ssdbltrp');
   AddISAExtension('ssnpm');
-//AddISAExtension('sspm');
+  AddISAExtension('sspm');
   AddISAExtension('ssstateen');
   AddISAExtension('ssstrict');
   AddISAExtension('sstc');
