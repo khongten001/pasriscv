@@ -86,6 +86,8 @@ A RISC-V RV64GCV/RVA23 emulator written in Object Pascal. It simulates processor
   - Zvknhb (Vector SHA-256/SHA-512)
   - Zvksed (Vector SM4 Encryption/Decryption)
   - Zvksh (Vector SM3 Hash Function)
+  - Zvkn/Zvknc/Zvkng (Vector NIST Crypto Bundles)
+  - Zvks/Zvksc/Zvksg (Vector ShangMi Crypto Bundles)
   - Zvkt (Vector Data-Independent Execution Latency)
   - Zve32f/Zve32x/Zve64f/Zve64d/Zve64x (Vector Sub-extensions)
   - Zicntr (Base Counters and Timers)
