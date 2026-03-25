@@ -156,6 +156,7 @@ A RISC-V RV64GCV/RVA23 emulator written in Object Pascal. It simulates processor
       - DS1307 RTC (if RTCMode=DS1307)
       - HID keyboard (planned, currently disabled)
 - Full MMU support with Sv39, Sv48 and Sv57 page table modes, including support for Svnapot and Svadu extensions
+- Snapshot support (WIP and untested so far)
 - Disassembler
   - RV64GCV instruction set support
   - Vector (V) extension instruction support  
